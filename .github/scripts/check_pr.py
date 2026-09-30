@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """PR의 Issue 연결과 커밋 제목 규칙을 검사한다."""
 import os
 import re
