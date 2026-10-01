@@ -8,10 +8,12 @@ import pytest
 import tifffile
 import torch
 
+from sic_xrt_ml.training.center_comparison import compare_centers
 from sic_xrt_ml.training.patch_classifier import (
     CLASSES,
     PatchDataset,
     classification_metrics,
+    crop_image,
     dataset_info,
     evaluate_test,
     to_tensor,
@@ -136,3 +138,65 @@ def test_review_selection_has_high_score_random_and_correct_controls():
     assert len({r['patch_id'] for r in selected}) == 16
     assert {'p94', 'p95', 'p96', 'p97', 'p98', 'p99'} <= {r['patch_id'] for r in selected}
     assert select_examples(rows) == selected
+
+
+def test_center_crop_retains_target_and_removes_outer_context():
+    image = np.zeros((128, 128, 3), dtype=np.uint8)
+    image[64, 64] = (20, 40, 60)
+    image[10, 10] = (255, 255, 255)
+    smaller = crop_image(image, 32)
+    assert smaller.shape == (32, 32, 3)
+    assert (smaller[16, 16] == (20, 40, 60)).all()
+    assert not (smaller == 255).any()
+    assert image[10, 10, 0] == 255
+    with pytest.raises(ValueError):
+        crop_image(image, 31)
+
+
+def test_crop_checkpoint_is_applied_in_evaluation_and_review(dataset, tmp_path):
+    import base64
+    import io
+
+    from PIL import Image
+
+    from sic_xrt_ml.training.validation_review import preview_data
+
+    torch.set_num_threads(2)
+    result = train(dataset, tmp_path / 'runs', epochs=1, size=16, center_crop=8, batch_size=3, device='cpu')
+    run = Path(result['run_dir'])
+    checkpoint = torch.load(run / 'best_model.pt', weights_only=True)
+    assert checkpoint['config']['input_size'] == 8
+    output = generate_review(run, dataset, device='cpu')
+    summary = json.loads((output / 'summary.json').read_text())
+    assert summary['metrics']['confusion_matrix'] == checkpoint['validation']['confusion_matrix']
+    assert summary['input_size'] == 8
+    row = dataset_info(dataset, 16)['rows']['val'][0]
+    assert Image.open(io.BytesIO(base64.b64decode(preview_data(dataset, row, 8)))).size == (8, 8)
+    assert evaluate_test(run, dataset, device='cpu')['input_size'] == 8
+    checkpoint['config']['center_crop'] = None
+    torch.save(checkpoint, run / 'best_model.pt')
+    with pytest.raises(ValueError, match='contract'):
+        generate_review(run, dataset, device='cpu')
+
+
+def test_fixed_comparison_preserves_baseline_and_never_evaluates_test(dataset, tmp_path):
+    torch.set_num_threads(2)
+    result = train(dataset, tmp_path / 'runs', epochs=1, size=16, batch_size=3, device='cpu')
+    baseline = Path(result['run_dir'])
+    # Legacy checkpoints have no crop fields and remain compatible.
+    checkpoint = torch.load(baseline / 'best_model.pt', weights_only=True)
+    checkpoint['config'].pop('center_crop')
+    checkpoint['config'].pop('input_size')
+    torch.save(checkpoint, baseline / 'best_model.pt')
+    before = {p: p.read_bytes() for folder in (dataset, baseline) for p in folder.rglob('*') if p.is_file()}
+    summary = compare_centers(dataset, baseline, tmp_path / 'comparison', crops=(8,), device='cpu')
+    assert summary['status'] == 'completed'
+    assert [r['input_size'] for r in summary['records']] == [16, 8]
+    assert summary['test_evaluated'] is False
+    output = Path(summary['output_dir'])
+    assert (output / 'comparison.png').is_file()
+    plan = json.loads((output / 'plan.json').read_text())
+    assert plan['input_sizes'] == [16, 8]
+    assert not list(output.rglob('test_metrics.json'))
+    for p, content in before.items():
+        assert p.read_bytes() == content

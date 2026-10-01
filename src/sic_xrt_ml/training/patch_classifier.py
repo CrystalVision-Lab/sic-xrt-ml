@@ -97,9 +97,41 @@ def to_tensor(image: np.ndarray) -> torch.Tensor:
     return torch.from_numpy(np.ascontiguousarray(normalized.transpose(2, 0, 1)))
 
 
+def validate_crop(size: int, center_crop: int | None):
+    if center_crop is not None and (not isinstance(center_crop, int) or center_crop < 8
+                                    or center_crop > size or (size-center_crop) % 2):
+        raise ValueError("Center crop must be >=8, <= source size, with equal integer margins")
+
+
+def crop_image(image: np.ndarray, center_crop: int | None = None):
+    if image.shape[0] != image.shape[1]:
+        raise ValueError("Centered inputs require square patches")
+    validate_crop(image.shape[0], center_crop)
+    if center_crop is None:
+        return image
+    start = (image.shape[0]-center_crop)//2
+    return image[start:start+center_crop, start:start+center_crop]
+
+
+def preprocessing_contract(center_crop: int | None = None):
+    return PREPROCESSING if center_crop is None else PREPROCESSING + f"_center_crop{center_crop}_pixels_no_resize"
+
+
+def checkpoint_crop(config: dict):
+    center_crop = config.get('center_crop')
+    validate_crop(config['size'], center_crop)
+    if (tuple(config['classes']) != CLASSES or config['preprocessing'] != preprocessing_contract(center_crop)
+            or config['model'] != 'SmallPatchCNN_v1_from_scratch'
+            or config.get('input_size', center_crop or config['size']) != (center_crop or config['size'])):
+        raise ValueError("Unsupported checkpoint input/model contract")
+    return center_crop
+
+
 class PatchDataset(Dataset):
-    def __init__(self, root: Path, rows: list[dict], size: int):
+    def __init__(self, root: Path, rows: list[dict], size: int, center_crop: int | None = None):
+        validate_crop(size, center_crop)
         self.root, self.rows, self.size = root.resolve(), rows, size
+        self.center_crop = center_crop
 
     def __len__(self):
         return len(self.rows)
@@ -112,7 +144,7 @@ class PatchDataset(Dataset):
         image = tifffile.imread(path)
         if image.shape[:2] != (self.size, self.size) or str(image.dtype) != row["dtype"]:
             raise ValueError("Patch shape or dtype differs from manifest")
-        return to_tensor(image), CLASSES.index(row["label"])
+        return to_tensor(crop_image(image, self.center_crop)), CLASSES.index(row["label"])
 
 
 class SmallPatchCNN(nn.Module):
@@ -176,10 +208,12 @@ def run_epoch(model, loader, device, optimizer=None) -> dict:
 
 
 def train(dataset_root: Path, output_root: Path, *, epochs=15, batch_size=32,
-          learning_rate=0.001, size=128, balanced=True, seed=42, device="cuda") -> dict:
+          learning_rate=0.001, size=128, balanced=True, seed=42, device="cuda",
+          center_crop: int | None = None) -> dict:
     if epochs < 1 or batch_size < 1 or learning_rate <= 0:
         raise ValueError("epochs, batch_size and learning_rate must be positive")
     info = dataset_info(dataset_root, size, balanced)
+    validate_crop(size, center_crop)
     output_root = output_root.resolve()
     if output_root == info["root"] or info["root"] in output_root.parents:
         raise ValueError("Training outputs must be outside the read-only dataset")
@@ -200,10 +234,11 @@ def train(dataset_root: Path, output_root: Path, *, epochs=15, batch_size=32,
               "train_csv_sha256": info["train_csv_sha256"], "classes": list(CLASSES),
               "counts": info["counts"], "wafer_groups": info["wafer_groups"],
               "dataset_review_status": info["review_status"], "research_only": True,
-              "preprocessing": PREPROCESSING, "model": "SmallPatchCNN_v1_from_scratch",
+              "preprocessing": preprocessing_contract(center_crop), "center_crop": center_crop,
+              "input_size": center_crop or size, "model": "SmallPatchCNN_v1_from_scratch",
               "test_used_for_selection": False}
     write_json(run_dir / "config.json", config)
-    loaders = {name: DataLoader(PatchDataset(info["root"], info["rows"][name], size),
+    loaders = {name: DataLoader(PatchDataset(info["root"], info["rows"][name], size, center_crop),
                                batch_size=batch_size, shuffle=name == "train", num_workers=0)
                for name in ("train", "val")}
     model = SmallPatchCNN().to(torch_device)
@@ -244,6 +279,7 @@ def train(dataset_root: Path, output_root: Path, *, epochs=15, batch_size=32,
 def evaluate_test(run_dir: Path, dataset_root: Path, batch_size=32, device="cuda") -> dict:
     checkpoint = torch.load(run_dir / "best_model.pt", map_location="cpu", weights_only=True)
     config = checkpoint["config"]
+    center_crop = checkpoint_crop(config)
     info = dataset_info(dataset_root, config["size"], config["balanced_train"])
     if info["manifest_sha256"] != config["manifest_sha256"]:
         raise ValueError("Test dataset differs from training manifest")
@@ -251,11 +287,12 @@ def evaluate_test(run_dir: Path, dataset_root: Path, batch_size=32, device="cuda
         raise RuntimeError("CUDA is unavailable")
     model = SmallPatchCNN().to(device)
     model.load_state_dict(checkpoint["state_dict"])
-    loader = DataLoader(PatchDataset(info["root"], info["rows"]["test"], config["size"]),
+    loader = DataLoader(PatchDataset(info["root"], info["rows"]["test"], config["size"], center_crop),
                         batch_size=batch_size, num_workers=0)
     metrics = run_epoch(model, loader, torch.device(device))
     result = {"split": "test", "selected_epoch": checkpoint["epoch"], "research_only": True,
-              "dataset_review_status": info["review_status"], "metrics": metrics}
+              "dataset_review_status": info["review_status"], "metrics": metrics,
+              "preprocessing": config['preprocessing'], "input_size": center_crop or config['size']}
     write_json(run_dir / "test_metrics.json", result)
     return result
 
