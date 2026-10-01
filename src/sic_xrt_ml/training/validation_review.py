@@ -19,10 +19,11 @@ from torch.utils.data import DataLoader
 
 from .patch_classifier import (
     CLASSES,
-    PREPROCESSING,
     PatchDataset,
     SmallPatchCNN,
+    checkpoint_crop,
     classification_metrics,
+    crop_image,
     dataset_info,
     file_hash,
     to_tensor,
@@ -48,11 +49,11 @@ def select_examples(rows, per_pair=12, seed=42):
     return selected
 
 
-def preview_data(root, row):
+def preview_data(root, row, center_crop=None):
     # Full precision remains in TIFF; this PNG is only a normalized display preview.
     if file_hash(root / row['path']) != row['sha256']:
         raise ValueError('Preview patch integrity check failed')
-    image = tifffile.imread(root / row['path'])
+    image = crop_image(tifffile.imread(root / row['path']), center_crop)
     rgb = to_tensor(image).permute(1, 2, 0).numpy()
     buffer = io.BytesIO()
     Image.fromarray(np.rint(rgb*255).astype(np.uint8)).save(buffer, format='PNG')
@@ -109,12 +110,14 @@ def make_report(root, predictions, metrics, metadata):
         return html.escape(str(value), quote=True)
     for row in selected:
         wrong = row['label'] != row['prediction']
-        center_x = (float(row['x']) - int(row['left']) + .5) / int(row['size']) * 100
-        center_y = (float(row['y']) - int(row['top']) + .5) / int(row['size']) * 100
+        input_size = metadata.get('center_crop') or int(row['size'])
+        margin = (int(row['size']) - input_size)//2
+        center_x = (float(row['x']) - int(row['left']) - margin + .5) / input_size * 100
+        center_y = (float(row['y']) - int(row['top']) - margin + .5) / input_size * 100
         cards.append(f'''<article data-id="{escape(row['patch_id'])}" data-label="{escape(row['label'])}" data-prediction="{escape(row['prediction'])}">
 <b>원래 라벨 {escape(row['label'])} → 예측 {escape(row['prediction'])}</b>
 <p><span class="badge {'correct' if not wrong else ''}">{'일치' if not wrong else '불일치'}</span> 모델 점수 {row['model_score']:.3f}</p>
-<div class="photo"><img alt="결함 패치" src="data:image/png;base64,{preview_data(root,row)}"><span class="cross" style="left:{center_x}%;top:{center_y}%"></span></div>
+<div class="photo"><img alt="모델 입력 패치" src="data:image/png;base64,{preview_data(root,row,metadata.get('center_crop'))}"><span class="cross" style="left:{center_x}%;top:{center_y}%"></span></div>
 <p class="detail">웨이퍼 {escape(row['wafer'])} · 좌표 ({escape(row['x'])}, {escape(row['y'])})<br>
 원본: {escape(row.get('source_image',''))}<br>패치: {escape(row['patch_id'])}</p>
 <select aria-label="검수 판단"><option value="unreviewed">아직 확인 안 함</option><option value="label_plausible">원래 라벨이 타당해 보임</option>
@@ -126,6 +129,7 @@ def make_report(root, predictions, metrics, metadata):
     table += '</table>'
     intro = (f"선택된 {metadata['selected_epoch']}회차 모델 · 검증 {len(predictions):,}장 · "
              f"검증 macro F1 {metrics['macro_f1']:.3f}. 라벨 검수 상태: {escape(metadata['dataset_review_status'])}.<br>"
+             f"표시되는 모델 입력: {metadata.get('input_size', '원본 패치')} 픽셀. 표시용 확대만 적용하며 모델 입력 리사이즈는 없습니다.<br>"
              f"여기에는 {len(selected)}개 비교 사례를 표시합니다. 혼동 쌍별 높은 점수와 무작위 사례를 섞었으므로 전체 비율을 대표하지 않습니다.<br>"
              '확인한 뒤 <b>검수 의견 저장</b>을 눌러 파일을 다운로드하세요. 새로고침/닫기 전 저장하세요. 의견은 원본 라벨에 자동 반영되지 않습니다.')
     page = PAGE.replace('PLACEHOLDER_INTRO', intro).replace('PLACEHOLDER_TABLE', table)
@@ -140,11 +144,10 @@ def generate_review(run_dir, dataset_root, *, batch_size=32, device='cuda'):
     checkpoint_path = run_dir / 'best_model.pt'
     checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=True)
     config = checkpoint['config']
+    center_crop = checkpoint_crop(config)
     info = dataset_info(dataset_root, config['size'], config['balanced_train'])
     if info['manifest_sha256'] != config['manifest_sha256'] or tuple(config['classes']) != CLASSES:
         raise ValueError('Checkpoint dataset or class contract differs')
-    if config['preprocessing'] != PREPROCESSING:
-        raise ValueError('Unsupported checkpoint preprocessing')
     sources = dataset_root / '기록/sources.json'
     source_map = {s['source_id']: s['image'] for s in json.loads(sources.read_text(encoding='utf-8'))} if sources.exists() else {}
     rows = info['rows']['val']
@@ -152,7 +155,7 @@ def generate_review(run_dir, dataset_root, *, batch_size=32, device='cuda'):
     model.load_state_dict(checkpoint['state_dict'])
     model.eval()
     predictions, matrix = [], np.zeros((3, 3), dtype=np.int64)
-    loader = DataLoader(PatchDataset(dataset_root, rows, config['size']), batch_size=batch_size, num_workers=0)
+    loader = DataLoader(PatchDataset(dataset_root, rows, config['size'], center_crop), batch_size=batch_size, num_workers=0)
     offset = 0
     with torch.inference_mode():
         for inputs, targets in loader:
@@ -171,6 +174,8 @@ def generate_review(run_dir, dataset_root, *, batch_size=32, device='cuda'):
                 'research_only': True, 'dataset_review_status': info['review_status'],
                 'manifest_sha256': info['manifest_sha256'], 'checkpoint_sha256': file_hash(checkpoint_path),
                 'selected_epoch': checkpoint['epoch'], 'selection': 'per_pair_half_high_score_half_random_seed42_correct4',
+                'center_crop': center_crop, 'input_size': center_crop or config['size'],
+                'preprocessing': config['preprocessing'],
                 'scores_calibrated': False, 'original_labels_modified': False, 'test_evaluated': False}
     page, selected = make_report(dataset_root, predictions, metrics, metadata)
     with (output / 'val_predictions.csv').open('w', encoding='utf-8-sig', newline='') as stream:
