@@ -22,3 +22,9 @@ runs/
 *.tiff
 *.npy
 *.npz
+*.zip
+*.roi
+local.json
+work/
+.ipynb_checkpoints/
+*.log
