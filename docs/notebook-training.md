@@ -69,3 +69,22 @@ best_model.pt의 동일 manifest/클래스/전처리 계약을 확인하고 val 
 검수 의견 저장은 JSON 파일 다운로드이며 자동 라벨 변경이 아닙니다.
 새로고침/창 닫기 전 반드시 저장하세요. 다운로드 JSON에는 패치 ID, 판단, 메모,
 manifest/모델 해시가 포함됩니다. 이 형식은 연구 기록 v1이며 다른 저장소의 입력 계약은 아닙니다.
+
+## 중심 입력 크기 비교
+
+`notebooks/02_compare_center.ipynb`에서 기존 완료된 128 입력 run과 데이터셋을 지정합니다.
+중앙 64/32 픽셀 입력 두 후보를 학습 전에 고정해 비교합니다. TIFF에서 읽은 이미지를
+메모리에서 중앙 crop하며 확대/리사이즈/증강은 없습니다. 작은 입력은 BPD 문맥을 잃을 수
+있으므로 개선을 전제하지 않습니다. 학습/val 행, 클래스, 모델 구조, seed, batch, lr,
+epoch, 장치와 PyTorch 버전은 기준 run과 같아야 합니다.
+
+비교 시작 전 plan.json을 저장하고 별도 runs 디렉터리에 각 후보 모델, 설정, 학습 기록,
+comparison.json/CSV/PNG를 저장합니다. 기존 모델/노트북/원본/라벨은 변경하지 않습니다.
+test는 예측하지 않습니다. 같은 val에서 epoch와 입력 크기를 고르므로 이 점수는 탐색
+결과이며 독립 일반화 성능을 입증하지 않습니다. CUDA의 비결정적 연산 가능성을 기록합니다.
+
+입력 계약: 기존 PREPROCESSING 문자열은 full input에 유지합니다. crop 후보는
+`_center_crop{N}_pixels_no_resize` 접미사와 center_crop/input_size를 체크포인트에 기록합니다.
+해당 필드가 없는 이전 체크포인트는 full input으로 읽습니다. 평가/검수도 동일 crop을
+적용하고 기록한 변환과 다른 체크포인트는 거절합니다. 검수 PNG는 모델이 읽은 crop을
+표시하며 확대는 화면 표시용입니다. 외부 ONNX/Analyzer 소비자 연결은 추가하지 않습니다.
