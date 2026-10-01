@@ -17,6 +17,7 @@ from sic_xrt_ml.training.patch_classifier import (
     to_tensor,
     train,
 )
+from sic_xrt_ml.training.validation_review import generate_review, select_examples
 
 
 @pytest.fixture
@@ -32,7 +33,7 @@ def dataset(tmp_path):
             rows.append({"patch_id": path.stem, "path": path.name,
                          "sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "point_id": path.stem,
                          "source_id": wafer, "wafer": wafer, "split": split, "label": label,
-                         "size": "16", "dtype": "uint8"})
+                         "size": "16", "dtype": "uint8", "x": "7.5", "y": "7.5", "left": "0", "top": "0"})
     fields = list(rows[0])
     for name, content in (("samples.csv", rows), ("train_balanced_16.csv", rows[:3])):
         with (root / "기록" / name).open("w", encoding="utf-8-sig", newline="") as stream:
@@ -101,3 +102,37 @@ def test_cpu_train_saves_checkpoint_and_test_is_explicit(dataset, tmp_path):
         assert path.read_bytes() == content
     with pytest.raises(ValueError, match="outside"):
         train(dataset, dataset / "models", size=16, epochs=1, device="cpu")
+
+
+def test_review_predicts_only_validation_and_keeps_inputs_unchanged(dataset, tmp_path):
+    torch.set_num_threads(2)
+    result = train(dataset, tmp_path / 'runs', epochs=1, size=16, batch_size=3, device='cpu')
+    run = Path(result['run_dir'])
+    snapshot = {p: p.read_bytes() for folder in (dataset, run) for p in folder.rglob('*') if p.is_file()}
+    output = generate_review(run, dataset, device='cpu')
+    summary = json.loads((output / 'summary.json').read_text())
+    assert summary['files_predicted'] == 3
+    assert summary['split'] == 'val'
+    assert summary['test_evaluated'] is False
+    assert summary['metrics']['confusion_matrix'] == json.loads((run / 'history.json').read_text())[0]['val']['confusion_matrix']
+    assert not (run / 'test_metrics.json').exists()
+    with (output / 'val_predictions.csv').open(encoding='utf-8-sig') as stream:
+        assert {r['split'] for r in csv.DictReader(stream)} == {'val'}
+    page = (output / '검수.html').read_text(encoding='utf-8')
+    assert 'data:image/png;base64,' in page and 'PLACEHOLDER_' not in page
+    assert '검수 의견 저장' in page
+    assert summary['dataset_review_status'] == 'pending'
+    for path, contents in snapshot.items():
+        assert path.read_bytes() == contents
+    again = generate_review(run, dataset, device='cpu')
+    assert output != again
+
+
+def test_review_selection_has_high_score_random_and_correct_controls():
+    rows = [{'patch_id': f'p{i}', 'label': 'BPD', 'prediction': 'TSD', 'model_score': i/100} for i in range(100)]
+    rows += [{'patch_id': f'c{i}', 'label': 'BPD', 'prediction': 'BPD', 'model_score': .5} for i in range(20)]
+    selected = select_examples(rows)
+    assert len(selected) == 16
+    assert len({r['patch_id'] for r in selected}) == 16
+    assert {'p94', 'p95', 'p96', 'p97', 'p98', 'p99'} <= {r['patch_id'] for r in selected}
+    assert select_examples(rows) == selected
