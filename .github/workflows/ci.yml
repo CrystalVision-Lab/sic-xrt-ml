@@ -15,7 +15,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: python -m pip install -e ".[dev]" numpy tifffile
+      - run: python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: python -m pip install -e ".[dev,baseline]"
       - run: ruff check .
       - run: python -c "import sic_xrt_ml"
       - run: python -m compileall -q src
