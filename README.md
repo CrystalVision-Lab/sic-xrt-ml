@@ -9,7 +9,13 @@ SiC XRT 결함 탐지·분류 모델의 연구, 학습, 평가, ONNX 내보내�
 - 학습 환경: `python -m pip install -e ".[train]"`
 - 검사: `ruff check .`, `pytest`
 
-현재는 `data/`, `preprocessing/`, `training/`, `evaluation/`, `export/` 모듈 경계만 마련했습니다. 학습·평가 코드는 별도 기능 Issue에서 추가합니다.
+`data/`, `preprocessing/`, `training/`, `evaluation/`, `export/` 모듈 경계를 둡니다.
+점 패치 분류 기준 모델의 학습·평가는 아래 노트북으로 실행합니다.
+그 밖의 학습과 ONNX 내보내기는 별도 기능 Issue에서 추가합니다.
+
+schema-v1 점 패치의 3클래스 기준 CNN 학습·검증은
+[JupyterLab 학습 노트북 안내](docs/notebook-training.md)를 따르세요.
+학습 산출물은 연구용이며 승인 모델/위치 검출/ONNX export는 별도 범위입니다.
 
 ## Windows GPU 연구 서버
 
