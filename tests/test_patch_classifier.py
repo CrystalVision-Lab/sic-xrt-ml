@@ -108,6 +108,8 @@ def test_cpu_train_saves_checkpoint_and_test_is_explicit(dataset, tmp_path):
 
 def test_review_predicts_only_validation_and_keeps_inputs_unchanged(dataset, tmp_path):
     torch.set_num_threads(2)
+    (dataset / '기록/sources.json').write_text(json.dumps([
+        {'source_id': '2', 'locator': 'wafer.zip::before/image.tif'}]), encoding='utf-8')
     result = train(dataset, tmp_path / 'runs', epochs=1, size=16, batch_size=3, device='cpu')
     run = Path(result['run_dir'])
     snapshot = {p: p.read_bytes() for folder in (dataset, run) for p in folder.rglob('*') if p.is_file()}
@@ -119,7 +121,9 @@ def test_review_predicts_only_validation_and_keeps_inputs_unchanged(dataset, tmp
     assert summary['metrics']['confusion_matrix'] == json.loads((run / 'history.json').read_text())[0]['val']['confusion_matrix']
     assert not (run / 'test_metrics.json').exists()
     with (output / 'val_predictions.csv').open(encoding='utf-8-sig') as stream:
-        assert {r['split'] for r in csv.DictReader(stream)} == {'val'}
+        predictions = list(csv.DictReader(stream))
+        assert {r['split'] for r in predictions} == {'val'}
+        assert {r['source_image'] for r in predictions} == {'wafer.zip::before/image.tif'}
     page = (output / '검수.html').read_text(encoding='utf-8')
     assert 'data:image/png;base64,' in page and 'PLACEHOLDER_' not in page
     assert '검수 의견 저장' in page
