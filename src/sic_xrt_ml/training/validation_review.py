@@ -149,7 +149,8 @@ def generate_review(run_dir, dataset_root, *, batch_size=32, device='cuda'):
     if info['manifest_sha256'] != config['manifest_sha256'] or tuple(config['classes']) != CLASSES:
         raise ValueError('Checkpoint dataset or class contract differs')
     sources = dataset_root / '기록/sources.json'
-    source_map = {s['source_id']: s['image'] for s in json.loads(sources.read_text(encoding='utf-8'))} if sources.exists() else {}
+    source_map = {s['source_id']: s.get('image', s.get('locator', ''))
+                  for s in json.loads(sources.read_text(encoding='utf-8'))} if sources.exists() else {}
     rows = info['rows']['val']
     model = SmallPatchCNN().to(device)
     model.load_state_dict(checkpoint['state_dict'])
