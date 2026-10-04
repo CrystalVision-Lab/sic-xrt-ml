@@ -88,6 +88,7 @@ def compare_centers(dataset_root, baseline_run, output_root, *, crops=(64, 32), 
             'baseline_hashes': preserved, 'device': device, 'torch': str(torch.__version__),
             'seed': config['seed'], 'epochs': config['epochs'], 'batch_size': config['batch_size'],
             'learning_rate': config['learning_rate'], 'dataset_review_status': info['review_status'],
+            'class_weighting': config.get('class_weighting', 'none'),
             'selection_split': 'val', 'test_evaluated': False,
             'interpretation': 'Exploratory comparison on reused validation wafer; no independent generalization claim',
             'deterministic_cuda_guaranteed': False}
@@ -98,7 +99,8 @@ def compare_centers(dataset_root, baseline_run, output_root, *, crops=(64, 32), 
             print(f'Comparing center {crop} pixels; all other settings fixed', flush=True)
             result = train(info['root'], output, epochs=config['epochs'], batch_size=config['batch_size'],
                            learning_rate=config['learning_rate'], size=config['size'], balanced=config['balanced_train'],
-                           seed=config['seed'], device=device, center_crop=crop)
+                           seed=config['seed'], device=device, center_crop=crop,
+                           class_weighting=config.get('class_weighting', 'none'))
             run = Path(result['run_dir'])
             plot_history(run)
             _, record = best_record(run)
