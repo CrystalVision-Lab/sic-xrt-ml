@@ -180,18 +180,35 @@ def classification_metrics(matrix: np.ndarray) -> dict:
             "confusion_axes": "rows=actual,columns=predicted", "class_order": list(CLASSES)}
 
 
-def run_epoch(model, loader, device, optimizer=None) -> dict:
+def inverse_frequency_weights(rows: list[dict]) -> list[float]:
+    """Derive N/(C*n_c) from the selected training rows only."""
+    counts = Counter(r['label'] for r in rows)
+    if set(counts) != set(CLASSES) or any(counts[c] < 1 for c in CLASSES):
+        raise ValueError('Every training class needs examples for loss weighting')
+    return [len(rows)/(len(CLASSES)*counts[c]) for c in CLASSES]
+
+
+def run_epoch(model, loader, device, optimizer=None, *, class_weights=None) -> dict:
     training = optimizer is not None
+    if class_weights is not None and not training:
+        raise ValueError('Class weights are training-only; validation loss must stay unweighted')
+    weights = None if class_weights is None else torch.as_tensor(class_weights, dtype=torch.float32, device=device)
+    if weights is not None and (weights.shape != (len(CLASSES),) or
+            not torch.isfinite(weights).all() or (weights <= 0).any()):
+        raise ValueError('Class weights must be three finite positive values')
     model.train(training)
     matrix, total_loss, total = np.zeros((3, 3), dtype=np.int64), 0.0, 0
-    criterion = nn.CrossEntropyLoss()
+    total_weight = 0.0
+    criterion = nn.CrossEntropyLoss(weight=weights, reduction='sum')
     with torch.set_grad_enabled(training):
         for inputs, targets in loader:
             inputs, targets = inputs.to(device), targets.to(device)
             if training:
                 optimizer.zero_grad(set_to_none=True)
             logits = model(inputs)
-            loss = criterion(logits, targets)
+            loss_sum = criterion(logits, targets)
+            denominator = len(targets) if weights is None else weights[targets].sum()
+            loss = loss_sum / denominator
             if not torch.isfinite(loss):
                 raise RuntimeError("Non-finite training loss")
             if training:
@@ -200,19 +217,25 @@ def run_epoch(model, loader, device, optimizer=None) -> dict:
             prediction = logits.detach().argmax(dim=1).cpu().numpy()
             actual = targets.cpu().numpy()
             np.add.at(matrix, (actual, prediction), 1)
-            total_loss += float(loss.detach()) * len(targets)
+            total_loss += float(loss_sum.detach())
+            total_weight += float(denominator)
             total += len(targets)
     if total == 0:
         raise ValueError("Empty data loader")
-    return classification_metrics(matrix) | {"loss": total_loss/total, "samples": total}
+    return classification_metrics(matrix) | {"loss": total_loss/total_weight, "samples": total}
 
 
 def train(dataset_root: Path, output_root: Path, *, epochs=15, batch_size=32,
           learning_rate=0.001, size=128, balanced=True, seed=42, device="cuda",
-          center_crop: int | None = None) -> dict:
+          center_crop: int | None = None, class_weighting: str = 'none') -> dict:
     if epochs < 1 or batch_size < 1 or learning_rate <= 0:
         raise ValueError("epochs, batch_size and learning_rate must be positive")
     info = dataset_info(dataset_root, size, balanced)
+    if class_weighting not in ('none', 'inverse_frequency'):
+        raise ValueError('Unsupported class weighting policy')
+    if balanced and class_weighting != 'none':
+        raise ValueError('Do not combine balanced downsampling and inverse-frequency loss')
+    class_weights = inverse_frequency_weights(info['rows']['train']) if class_weighting != 'none' else None
     validate_crop(size, center_crop)
     output_root = output_root.resolve()
     if output_root == info["root"] or info["root"] in output_root.parents:
@@ -236,7 +259,12 @@ def train(dataset_root: Path, output_root: Path, *, epochs=15, batch_size=32,
               "dataset_review_status": info["review_status"], "research_only": True,
               "preprocessing": preprocessing_contract(center_crop), "center_crop": center_crop,
               "input_size": center_crop or size, "model": "SmallPatchCNN_v1_from_scratch",
-              "test_used_for_selection": False}
+              "test_used_for_selection": False,
+              "class_weighting": class_weighting, "class_weights": class_weights,
+              "class_weight_basis": 'selected_training_rows_only' if class_weights else None,
+              "training_loss_reduction": 'sum_loss/sum_target_weights' if class_weights else 'sum_loss/samples',
+              "validation_loss_weighted": False,
+              "optimizer_steps_per_epoch": (len(info['rows']['train'])+batch_size-1)//batch_size}
     write_json(run_dir / "config.json", config)
     loaders = {name: DataLoader(PatchDataset(info["root"], info["rows"][name], size, center_crop),
                                batch_size=batch_size, shuffle=name == "train", num_workers=0)
@@ -249,7 +277,7 @@ def train(dataset_root: Path, output_root: Path, *, epochs=15, batch_size=32,
     try:
         for epoch in range(1, epochs+1):
             started = time.perf_counter()
-            training = run_epoch(model, loaders["train"], torch_device, optimizer)
+            training = run_epoch(model, loaders["train"], torch_device, optimizer, class_weights=class_weights)
             validation = run_epoch(model, loaders["val"], torch_device)
             record = {"epoch": epoch, "train": training, "val": validation,
                       "seconds": time.perf_counter() - started}
@@ -266,7 +294,8 @@ def train(dataset_root: Path, output_root: Path, *, epochs=15, batch_size=32,
                   f"{record['seconds']:.1f}s", flush=True)
         outcome = {"status": "completed", "run_dir": str(run_dir), "epochs_completed": len(history),
                    "best_val_macro_f1": best, "research_only": True,
-                   "dataset_review_status": info["review_status"], "test_evaluated": False}
+                   "dataset_review_status": info["review_status"], "test_evaluated": False,
+                   "optimizer_steps_completed": len(history)*len(loaders['train'])}
         write_json(run_dir / "result.json", outcome)
         return outcome
     except BaseException as error:
@@ -324,8 +353,11 @@ def main() -> int:
     parser.add_argument("--epochs", type=int, default=15)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--device", choices=["cuda", "cpu"], default="cuda")
+    parser.add_argument("--unbalanced", action='store_true', help='Use all training rows instead of the balanced CSV')
+    parser.add_argument("--class-weighting", choices=['none', 'inverse_frequency'], default='none')
     args = parser.parse_args()
-    result = train(args.dataset, args.outputs, epochs=args.epochs, batch_size=args.batch_size, device=args.device)
+    result = train(args.dataset, args.outputs, epochs=args.epochs, batch_size=args.batch_size,
+                   device=args.device, balanced=not args.unbalanced, class_weighting=args.class_weighting)
     plot_history(Path(result["run_dir"]))
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0

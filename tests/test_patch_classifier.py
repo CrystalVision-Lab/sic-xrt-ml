@@ -3,6 +3,7 @@ import hashlib
 import json
 from pathlib import Path
 
+import matplotlib
 import numpy as np
 import pytest
 import tifffile
@@ -16,10 +17,14 @@ from sic_xrt_ml.training.patch_classifier import (
     crop_image,
     dataset_info,
     evaluate_test,
+    inverse_frequency_weights,
+    run_epoch,
     to_tensor,
     train,
 )
 from sic_xrt_ml.training.validation_review import generate_review, select_examples
+
+matplotlib.use('Agg')
 
 
 @pytest.fixture
@@ -204,3 +209,85 @@ def test_fixed_comparison_preserves_baseline_and_never_evaluates_test(dataset, t
     assert not list(output.rglob('test_metrics.json'))
     for p, content in before.items():
         assert p.read_bytes() == content
+
+
+def test_inverse_frequency_weights_use_only_given_training_rows():
+    rows = [{'label': 'BPD'}]*2 + [{'label': 'TED'}]*6 + [{'label': 'TSD'}]*4
+    assert inverse_frequency_weights(rows) == [2., 2/3, 1.]
+    for invalid in ([], rows[:2], rows+[{'label':'unknown'}]):
+        with pytest.raises(ValueError, match='training class'):
+            inverse_frequency_weights(invalid)
+
+
+def test_weighted_epoch_loss_is_globally_reduced_and_validation_stays_unweighted():
+    from torch.utils.data import DataLoader, TensorDataset
+
+    torch.set_num_threads(2)
+    model = torch.nn.Linear(1,3)
+    with torch.no_grad():
+        model.weight.zero_(); model.bias.copy_(torch.tensor([.2, 1.1, -.7]))
+    inputs, targets = torch.zeros(7,1), torch.tensor([0,1,1,1,1,2,2])
+    weights = [7/3,7/12,7/6]
+    expected = torch.nn.functional.cross_entropy(model(inputs), targets, weight=torch.tensor(weights)).item()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.)
+    for batch in (2,7):
+        loader = DataLoader(TensorDataset(inputs,targets), batch_size=batch)
+        observed = run_epoch(model,loader,torch.device('cpu'),optimizer,class_weights=weights)
+        assert observed['samples'] == 7 and observed['loss'] == pytest.approx(expected,abs=1e-6)
+    plain = run_epoch(model,loader,torch.device('cpu'))
+    assert plain['loss'] == pytest.approx(torch.nn.functional.cross_entropy(model(inputs),targets).item())
+    with pytest.raises(ValueError, match='training-only'):
+        run_epoch(model,loader,torch.device('cpu'),class_weights=weights)
+    for bad in ([1,0,1], [1,float('nan'),1], [1,2]):
+        with pytest.raises(ValueError, match='finite positive'):
+            run_epoch(model,loader,torch.device('cpu'),optimizer,class_weights=bad)
+
+
+def test_full_weighted_training_preserves_default_and_checkpoint_contract(dataset,tmp_path):
+    result = train(dataset,tmp_path/'runs',epochs=1,size=16,balanced=False,
+                   class_weighting='inverse_frequency',device='cpu',batch_size=2)
+    run = Path(result['run_dir'])
+    config = json.loads((run/'config.json').read_text(encoding='utf-8'))
+    assert config['class_weights'] == [1.,1.,1.]
+    assert config['class_weight_basis'] == 'selected_training_rows_only'
+    assert config['validation_loss_weighted'] is False and config['balanced_train'] is False
+    assert result['optimizer_steps_completed'] == 2
+    assert not (run/'test_metrics.json').exists()
+    # Loss metadata is additive: inference continues to use the same input/model contract.
+    review = generate_review(run,dataset,device='cpu')
+    assert json.loads((review/'summary.json').read_text())['split'] == 'val'
+    centers = compare_centers(dataset,run,tmp_path/'centers',crops=(8,),device='cpu')
+    child = Path(centers['records'][1]['run_dir'])
+    assert json.loads((child/'config.json').read_text())['class_weighting'] == 'inverse_frequency'
+    with pytest.raises(ValueError, match='Do not combine'):
+        train(dataset,tmp_path/'bad',epochs=1,size=16,class_weighting='inverse_frequency',device='cpu')
+
+
+def test_full_comparison_uses_extra_training_rows_and_fixed_validation(dataset,tmp_path):
+    from sic_xrt_ml.training.full_training_comparison import compare_full_training
+
+    rows = list(csv.DictReader((dataset/'기록/samples.csv').open(encoding='utf-8-sig',newline='')))
+    extra = rows[1] | {'patch_id':'extra_TED','point_id':'extra_TED','path':'extra_TED.tif'}
+    (dataset/extra['path']).write_bytes((dataset/rows[1]['path']).read_bytes())
+    rows.append(extra)
+    with (dataset/'기록/samples.csv').open('w',encoding='utf-8-sig',newline='') as stream:
+        writer = csv.DictWriter(stream,fieldnames=list(rows[0]));writer.writeheader();writer.writerows(rows)
+    summary = json.loads((dataset/'summary.json').read_text());summary['patch_count'] = 10
+    (dataset/'summary.json').write_text(json.dumps(summary))
+    (dataset/'validation.json').write_text(json.dumps({'status':'passed','files_checked':10}))
+    result = train(dataset,tmp_path/'baseline',epochs=1,size=16,device='cpu',batch_size=2)
+    baseline = Path(result['run_dir'])
+    review = generate_review(baseline,dataset,device='cpu')
+    before = {p:p.read_bytes() for root in (dataset,baseline) for p in root.rglob('*') if p.is_file()}
+    compared = compare_full_training(dataset,baseline,review,tmp_path/'comparison',device='cpu')
+    assert [r['training_samples'] for r in compared['records']] == [3,4]
+    assert compared['class_weights'] == [4/3,2/3,4/3]
+    assert compared['validation_samples'] == 3 and compared['test_evaluated'] is False
+    assert compared['validation_labels_preserved'] and compared['baseline_hashes_preserved']
+    assert not list(Path(compared['output_dir']).rglob('test_metrics.json'))
+    for p, content in before.items():
+        assert p.read_bytes() == content
+    wrong = json.loads((review/'summary.json').read_text());wrong['checkpoint_sha256']='changed'
+    (review/'summary.json').write_text(json.dumps(wrong))
+    with pytest.raises(ValueError,match='checkpoint and dataset'):
+        compare_full_training(dataset,baseline,review,tmp_path/'bad',device='cpu')
