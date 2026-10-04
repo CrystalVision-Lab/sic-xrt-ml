@@ -291,3 +291,72 @@ def test_full_comparison_uses_extra_training_rows_and_fixed_validation(dataset,t
     (review/'summary.json').write_text(json.dumps(wrong))
     with pytest.raises(ValueError,match='checkpoint and dataset'):
         compare_full_training(dataset,baseline,review,tmp_path/'bad',device='cpu')
+
+
+def test_pixel_diagnostics_separate_center_signal_from_off_center_peak():
+    from sic_xrt_ml.training.tsd_diagnostics import pixel_features
+
+    centered = np.full((64,64,3),50,dtype=np.uint8)
+    centered[30:34,30:34] = 255
+    offset = np.full_like(centered,50)
+    offset[10:14,10:14] = 255
+    a,b = pixel_features(centered),pixel_features(offset)
+    assert a['center_q99_minus_background_q99'] > .7
+    assert b['center_q99_minus_background_q99'] <= 0
+    assert a['brightest_3x3_distance_pixels'] < 3
+    assert b['brightest_3x3_distance_pixels'] > 20
+    for name,value in a.items():
+        assert pixel_features(centered.astype(np.uint16)*257)[name] == pytest.approx(value)
+    with pytest.raises(ValueError,match='square'):
+        pixel_features(np.zeros((32,40),dtype=np.uint8))
+
+
+def test_subtype_diagnostics_keep_supplied_targets_and_support():
+    from sic_xrt_ml.training.tsd_diagnostics import grouped_counts, subtype_metrics
+
+    rows = [{'split':'val','wafer':'2','phase':'before','source_id':'s','label':'TSD',
+             'provider_fine_label':'TSD_a','prediction':prediction} for prediction in ('TED','TSD','TED')]
+    assert grouped_counts(rows)[0]['counts'] == {'TSD':3}
+    m = subtype_metrics({str(i):r for i,r in enumerate(rows)})['TSD_a']
+    assert m['per_class']['TSD']['support'] == 3
+    assert m['per_class']['TSD']['recall'] == 1/3
+    assert m['confusion_matrix'][2] == [0,2,1]
+
+
+def test_tsd_a_descriptor_plot_has_real_nonempty_groups(tmp_path):
+    from sic_xrt_ml.training.tsd_diagnostics import plot_features
+
+    features = [{'split':split,'fine_label':'TSD_a','background_median':.2,
+                 'center_q99_minus_background_q99':.3} for split in ('train','val')]
+    plot_features(tmp_path,features)
+    assert (tmp_path/'pixel_descriptors.png').stat().st_size > 1000
+
+
+def test_tsd_diagnostics_fixed_predictions_no_test_reads_or_prior_changes(dataset,tmp_path):
+    from sic_xrt_ml.training.tsd_diagnostics import diagnose_and_compare
+
+    torch.set_num_threads(2)
+    result = train(dataset,tmp_path/'baseline',epochs=1,size=16,balanced=False,
+                   class_weighting='inverse_frequency',device='cpu',batch_size=2)
+    run = Path(result['run_dir'])
+    review = generate_review(run,dataset,device='cpu')
+    # Unreadable test images prove only train/val pixel access; keep them unchanged throughout.
+    for p in dataset.glob('test_*.tif'):
+        p.write_bytes(b'Test pixels must not be decoded')
+    before = {p:p.read_bytes() for root in (dataset,run) for p in root.rglob('*') if p.is_file()}
+    completed = diagnose_and_compare(dataset,run,review,tmp_path/'diagnostic',crops=(8,),device='cpu')
+    assert completed['status']=='completed' and completed['test_evaluated'] is False
+    assert completed['diagnostics']['test_pixels_read'] is False
+    assert [r['input_size'] for r in completed['records']] == [16,8]
+    path = Path(completed['output_dir'])
+    paired = list(csv.DictReader((path/'paired_validation_predictions.csv').open(encoding='utf-8-sig')))
+    assert len(paired)==3 and {r['patch_id'] for r in paired}=={f'val_{c}' for c in CLASSES}
+    features = list(csv.DictReader((path/'pixel_features.csv').open(encoding='utf-8-sig')))
+    assert len(features)==6 and {r['split'] for r in features}=={'train','val'}
+    assert not list(path.rglob('test_metrics.json'))
+    for p,body in before.items():
+        assert p.read_bytes()==body
+    bad = json.loads((review/'summary.json').read_text());bad['checkpoint_sha256']='forged'
+    (review/'summary.json').write_text(json.dumps(bad))
+    with pytest.raises(ValueError,match='checkpoint and dataset'):
+        diagnose_and_compare(dataset,run,review,tmp_path/'bad',crops=(8,),device='cpu')
