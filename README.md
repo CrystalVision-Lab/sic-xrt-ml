@@ -17,6 +17,9 @@ schema-v1 점 패치의 3클래스 기준 CNN 학습·검증은
 [JupyterLab 학습 노트북 안내](docs/notebook-training.md)를 따르세요.
 학습 산출물은 연구용이며 승인 모델/위치 검출/ONNX export는 별도 범위입니다.
 
+명암 보정 모델의 누락 개선은 [BPD 오탐 제한 개발 실험](docs/recall-budget.md)에서
+같은 웨이퍼 분할로 비교합니다. 새 후보가 제한을 충족하지 못하면 기존 모델을 유지합니다.
+
 ## Windows GPU 연구 서버
 
 로컬 JupyterLab 실행/종료, CUDA 실제 연산·역전파 점검, 외부 자료 폴더의 읽기 전용
