@@ -105,7 +105,7 @@ def split_wafer(rows, heldout):
 
 
 def sampling_weights(rows, power):
-    if power not in (.5, 1.) or not rows or any(r['wafer'] not in WAFERS for r in rows):
+    if power not in (.5, .75, 1.) or not rows or any(r['wafer'] not in WAFERS for r in rows):
         raise ValueError('Invalid development sampler')
     counts = Counter(r['label'] for r in rows)
     if set(counts) != set(CLASSES):
