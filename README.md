@@ -27,3 +27,5 @@ ZIP 목차·TIFF 헤더 점검을 지원합니다. [설치와 사용 방법](doc
 `work/`와 `outputs/`에 저장합니다. 서버는 이 PC에서만 접속할 수 있습니다.
 
 원본 XRT 데이터, 체크포인트, 실험 산출물은 Git에 넣지 않습니다. Analyzer에는 버전·해시·라벨·입출력 스키마가 기록된 모델 산출물만 전달합니다. [AGENTS.md](AGENTS.md)와 [공통 handbook](https://github.com/CrystalVision-Lab/engineering-handbook)을 읽으세요.
+
+프로그램 검수 자료를 기존 자료와 함께 일괄 학습하는 방법은 [검수 학습 안내](docs/human-feedback-training.md)를 따릅니다.
