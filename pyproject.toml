@@ -5,14 +5,14 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "sic-xrt-ml"
 version = "0.1.0"
-description = "SiC XRT model research scaffold"
+description = "Verified RGB patch classification research pipeline"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
 
 [project.optional-dependencies]
 dev = ["ruff>=0.6,<1", "pytest>=8,<9"]
-train = ["torch>=2.3", "numpy>=1.26", "tifffile>=2024.2", "onnx>=1.16"]
+train = ["torch>=2.9,<2.10", "numpy>=1.26", "Pillow>=10", "onnx>=1.16,<2", "onnxruntime>=1.18,<2"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
