@@ -43,6 +43,7 @@ def test_loader_input_and_readiness(dataset):
         "before_after_group",
         "duplicate_group",
         "split_group_id",
+        "leakage_component",
     ],
 )
 def test_group_leakage(dataset, key):

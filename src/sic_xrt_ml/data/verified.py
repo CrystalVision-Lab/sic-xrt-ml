@@ -182,7 +182,13 @@ def validate(root):
             raise ValueError("APPROVAL_PROVENANCE")
         if not row.get("model_provenance"):
             raise ValueError("MODEL_PROVENANCE")
-        for key in ("source_hash", "crop_hash", "pixel_hash", "split_group_id"):
+        for key in (
+            "source_hash",
+            "crop_hash",
+            "pixel_hash",
+            "split_group_id",
+            "leakage_component",
+        ):
             if not re.fullmatch(r"[0-9a-f]{64}", row[key]):
                 raise ValueError("SHA_FORMAT")
         if row["image_path"] != "images/" + row["crop_hash"] + ".png":
@@ -232,6 +238,7 @@ def validate(root):
             "before_after_group",
             "duplicate_group",
             "split_group_id",
+            "leakage_component",
         ):
             if row[key] is None:
                 continue

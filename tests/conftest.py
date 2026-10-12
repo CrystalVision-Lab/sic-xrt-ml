@@ -76,6 +76,7 @@ def write_dataset(root, rows=None):
                         "training_use_authorized": True,
                         "split": split,
                         "split_group_id": digest(f"group-{i}"),
+                        "leakage_component": digest(f"group-{i}"),
                     }
                 )
     files = {r["image_path"]: r["crop_hash"] for r in rows}

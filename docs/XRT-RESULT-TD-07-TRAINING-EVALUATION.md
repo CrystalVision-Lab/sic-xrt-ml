@@ -2,11 +2,11 @@
 
 ## Overall Status
 
-엔지니어링 검증 진행 중. 실제 정답 DATA_NOT_READY. TRAINING_PIPELINE_VERIFIED는 합성 자료로 학습 코드가 동작한다는 의미다. 실제 학습 NOT_RUN / 독립 평가 NOT_AVAILABLE / 성능 개선 NOT_VERIFIED. Detector·Segmentation 개선을 주장하지 않는다.
+로컬 엔지니어링 PASS, 최종 CI 확인 중. 실제 정답 DATA_NOT_READY. TRAINING_PIPELINE_VERIFIED는 합성 자료로 학습 코드가 동작한다는 의미다. 실제 학습 NOT_RUN / 독립 평가 NOT_AVAILABLE / 성능 개선 NOT_VERIFIED. Detector·Segmentation 개선을 주장하지 않는다.
 
 ## Git / PR
 
-시작 원격 main `cc0cbabb6640ddd2899ecee9b9195ee450f45f4f`를 확인했다. Issue #45, branch feat/45-training-evaluation-pipeline. 로컬의 별도 미병합 feat/43-human-feedback-training@446d7fb는 보존하고 독립 worktree에서 처음부터 구현했다. Analyzer Issue #108의 승인 데이터셋 v1 Artifact만 소비하며 소스를 복사하지 않는다. Draft PR/최종 CI는 검증 완료 후 기록한다.
+시작 원격 main `cc0cbabb6640ddd2899ecee9b9195ee450f45f4f`를 확인했다. Issue #45, branch feat/45-training-evaluation-pipeline. 로컬의 별도 미병합 feat/43-human-feedback-training@446d7fb는 보존하고 독립 worktree에서 처음부터 구현했다. Analyzer Issue #108의 승인 데이터셋 v1 Artifact만 소비하며 소스를 복사하지 않는다. Draft PR [#46](https://github.com/CrystalVision-Lab/sic-xrt-ml/pull/46). 최종 HEAD/CI는 PR에 기록한다.
 
 ## Current Ground Truth Availability / Dataset Eligibility
 
@@ -24,7 +24,7 @@ Analyzer ADMIN의 append-only 승인과 Group Mapping이 선행되어야 한다.
 
 ## Dataset Split / Leakage / Wafer Holdout
 
-Producer가 동일 source hash·Wafer·결함 target·Run·촬영·전후·제공자·중복 그룹을 union하여 seed로 결정적 분할한다. ML은 각 관계의 train/validation/test 교차를 다시 거부한다. dHash Hamming ≤4 유사 패치의 교차도 거부한다. 이는 완전한 유사 이미지 검출기가 아니며 검증된 Mapping과 인간 확인이 여전히 필요하다. 정규 십진 wafer_id `8` 또는 evaluation_only 자료는 test 전용이다. 원본 파일명으로 Wafer를 추론하지 않는다. Test는 학습·validation·early stopping에 쓰지 않는다.
+Producer는 중복 제외 전에 leakage_component와 평가 전용 전파를 계산하여 제외된 duplicate alias의 원본 연결도 보존한다. ML은 그 성분의 split 교차도 거부한다. Producer가 동일 source hash·Wafer·결함 target·Run·촬영·전후·제공자·중복 그룹을 union하여 seed로 결정적 분할한다. ML은 각 관계의 train/validation/test 교차를 다시 거부한다. dHash Hamming ≤4 유사 패치의 교차도 거부한다. 이는 완전한 유사 이미지 검출기가 아니며 검증된 Mapping과 인간 확인이 여전히 필요하다. 정규 십진 wafer_id `8` 또는 evaluation_only 자료는 test 전용이다. 원본 파일명으로 Wafer를 추론하지 않는다. Test는 학습·validation·early stopping에 쓰지 않는다.
 
 ## Training Architecture
 
@@ -65,3 +65,12 @@ Accuracy, Balanced Accuracy, Macro F1, 클래스별 Precision/Recall/F1/Support,
 ## Scientific Validation Status / Known Limitations / Next TD
 
 실제 정답 DATA_NOT_READY, 실제 학습 NOT_RUN, 독립 평가 NOT_AVAILABLE, 성능 개선 NOT_VERIFIED. 기능 검증이 실데이터 accuracy를 증명하지 않는다. 실제 사용권·전문가 승인·검증된 독립 그룹·충분한 클래스 표본을 수집한 뒤 새 immutable Dataset을 만든다. 동일 독립 test에서 기존 모델과 비교하고 전문가가 후보를 승인해야 TD08 안전 배포를 진행할 수 있다. 원본 PyTorch checkpoint 호환성은 미확인이다. Augmentation의 물리적 타당성·검사기/Segmentation·3D 재구성은 이번 범위에 없다.
+
+
+## Acceptance Evidence / Initial Failures
+
+로컬 CPU 33 PASS. 독립 Producer PostgreSQL 합성 9개(각 split BPD/TED/TSD 1개)의 PNG/SHA/승인 Manifest를 로더가 그대로 소비해 2-epoch training→실제 기존 ONNX와 동일 입력 비교→checker/ORT parity→candidate registry까지 통과했다. 합성 비교는 scientific_metrics=false이고 실제 accuracy 개선 증거가 아니다. 배치1 parity 최대오차0, 배치7 2.9802322387695312e-08. 동시에 localhost health GET 12회 모두 HTTP200. Artifact와 failure 로그는 ignored/private 폴더에 보관한다.
+
+초기 loader 계약 테스트는 Fixture가 전역 CONTRACT를 공유해 변경하던 오류를 발견해 deepcopy로 수정했다. 기존 data/ ignore 규칙이 Python 소스를 가리는 문제는 /data/로 고정했다. 실제 기존 ONNX의 dynamic dimension 이름은 batch, 새 export는 N이었다. 문자열 이름 자체를 계약 위반으로 판단하던 비교 도구를 수정하여, non-empty symbolic batch·고정 [3,128,128]·동일 output batch/[3]·dtype/name/hash를 검증한다. [ONNX IR shape 규격](https://onnx.ai/onnx/repo-docs/IR.html#static-tensor-shapes)의 symbolic dimension 의미를 확인했다. 동등한 batch 심볼을 갖는 Fixture도 회귀에 포함한다.
+
+단회/반복 test 튜닝 금지와 synthetic/real origin guard를 유지한다. 해당 수정은 기존 ONNX 파일의 변경이 아니다. 최종 core connectivity 변경 후 Producer→Consumer 연동은 다시 확인한다.
