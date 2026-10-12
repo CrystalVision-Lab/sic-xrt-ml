@@ -273,3 +273,43 @@ def test_symlink_guard_and_oversize(dataset, monkeypatch):
     path.write_bytes(b"x" * (4 * 1024**2 + 1))
     with pytest.raises(ValueError, match="OVERSIZED"):
         safe_file(root, m["rows"][0]["image_path"])
+
+
+def test_encoded_rgb16_png_rejected_before_implicit_decode(dataset):
+    import hashlib
+    import struct
+    import zlib
+
+    from sic_xrt_ml.data.verified import digest
+
+    root, m = dataset
+
+    def chunk(kind, data):
+        return (
+            struct.pack(">I", len(data))
+            + kind
+            + data
+            + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+        )
+
+    raw = (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", 128, 128, 16, 2, 0, 0, 0))
+        + chunk(
+            b"IDAT",
+            zlib.compress(
+                b"".join(b"\0" + b"\x80\x00" * (128 * 3) for _ in range(128))
+            ),
+        )
+        + chunk(b"IEND", b"")
+    )
+    row = m["rows"][0]
+    (root / row["image_path"]).unlink()
+    row["crop_hash"] = hashlib.sha256(raw).hexdigest()
+    row["image_path"] = "images/" + row["crop_hash"] + ".png"
+    (root / row["image_path"]).write_bytes(raw)
+    m["files"] = {r["image_path"]: r["crop_hash"] for r in m["rows"]}
+    m["file_manifest_hash"] = digest(m["files"])
+    save_manifest(root, m)
+    with pytest.raises(ValueError, match="PNG_RGB8_ENCODING_REQUIRED"):
+        validate(root)

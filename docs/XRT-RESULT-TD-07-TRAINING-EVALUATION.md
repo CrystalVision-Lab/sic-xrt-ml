@@ -69,8 +69,15 @@ Accuracy, Balanced Accuracy, Macro F1, 클래스별 Precision/Recall/F1/Support,
 
 ## Acceptance Evidence / Initial Failures
 
-로컬 CPU 33 PASS. 독립 Producer PostgreSQL 합성 9개(각 split BPD/TED/TSD 1개)의 PNG/SHA/승인 Manifest를 로더가 그대로 소비해 2-epoch training→실제 기존 ONNX와 동일 입력 비교→checker/ORT parity→candidate registry까지 통과했다. 합성 비교는 scientific_metrics=false이고 실제 accuracy 개선 증거가 아니다. 배치1 parity 최대오차0, 배치7 2.9802322387695312e-08. 동시에 localhost health GET 12회 모두 HTTP200. Artifact와 failure 로그는 ignored/private 폴더에 보관한다.
+로컬 CPU 34 PASS. 독립 Producer PostgreSQL 합성 9개(각 split BPD/TED/TSD 1개)의 PNG/SHA/승인 Manifest를 로더가 그대로 소비해 2-epoch training→실제 기존 ONNX와 동일 입력 비교→checker/ORT parity→candidate registry까지 통과했다. 합성 비교는 scientific_metrics=false이고 실제 accuracy 개선 증거가 아니다. 배치1 parity 최대오차0, 배치7 2.9802322387695312e-08. 동시에 localhost health GET 12회 모두 HTTP200. Artifact와 failure 로그는 ignored/private 폴더에 보관한다.
 
 초기 loader 계약 테스트는 Fixture가 전역 CONTRACT를 공유해 변경하던 오류를 발견해 deepcopy로 수정했다. 기존 data/ ignore 규칙이 Python 소스를 가리는 문제는 /data/로 고정했다. 실제 기존 ONNX의 dynamic dimension 이름은 batch, 새 export는 N이었다. 문자열 이름 자체를 계약 위반으로 판단하던 비교 도구를 수정하여, non-empty symbolic batch·고정 [3,128,128]·동일 output batch/[3]·dtype/name/hash를 검증한다. [ONNX IR shape 규격](https://onnx.ai/onnx/repo-docs/IR.html#static-tensor-shapes)의 symbolic dimension 의미를 확인했다. 동등한 batch 심볼을 갖는 Fixture도 회귀에 포함한다.
 
-단회/반복 test 튜닝 금지와 synthetic/real origin guard를 유지한다. 해당 수정은 기존 ONNX 파일의 변경이 아니다. 최종 core connectivity 변경 후 Producer→Consumer 연동은 다시 확인한다.
+단회/반복 test 튜닝 금지와 synthetic/real origin guard를 유지한다. 해당 수정은 기존 ONNX 파일의 변경이 아니다. 최종 Producer→Consumer 9개 합성 Artifact 연동 PASS: batch1/7 parity 최대오차 모두0, 동시 localhost health HTTP200 14회. 기존 Analyzer FrozenClassifier를 변경하지 않고 새 private candidate의 batch2 계약까지 검증했다. PNG IHDR bit depth=8/color type=2를 검사하여 RGB16의 암묵적 RGB8 디코딩을 거부한다. 해당 음성 회귀도 포함했다.
+
+
+## Final Git / Cross-Repository Record
+
+Analyzer 시작 a6605088 / Issue108 / Draft109, ML 시작 cc0cbabb / Issue45 / Draft46. 최종 구현 HEAD/CI는 [Draft #46](https://github.com/CrystalVision-Lab/sic-xrt-ml/pull/46)에 기록한다. 원래 ML worktree feat/43@446d7fb는 clean 그대로 보존했다. 이 작업의 실행 위치는 `D:/capstone/.worktrees/sic-xrt-ml-td07`이며 그 src를 명시한 환경에서 검증했다. 사용한 기존 환경은 Python3.13.7/PyTorch2.9.1+cu128였지만 실제 계산은 CPU2 threads다. 별도 Linux CI는 torch2.9.1 CPU wheel을 사용한다.
+
+Git에는 generated Dataset/PNG/ONNX/Checkpoint/실제 연구자료·비밀을 포함하지 않는다. 최종 기능 검증은 TRAINING_PIPELINE_VERIFIED이며 실제 학습 NOT_RUN, 독립 과학 평가 NOT_AVAILABLE, IMPROVEMENT NOT_VERIFIED다. 원본 Source·검수·Geometry·모델·TIFF 역할은 Analyzer 회귀에서 유지됐다. 새로운 candidate는 배포되지 않았다.

@@ -208,7 +208,13 @@ def validate(root):
         raw = safe_file(root, row["image_path"]).read_bytes()
         if hashlib.sha256(raw).hexdigest() != row["crop_hash"]:
             raise ValueError("PNG_SHA_MISMATCH")
-        with Image.open(safe_file(root, row["image_path"])) as image:
+        if (
+            raw[:8] != b"\x89PNG\r\n\x1a\n"
+            or raw[12:16] != b"IHDR"
+            or raw[24:26] != b"\x08\x02"
+        ):
+            raise ValueError("PNG_RGB8_ENCODING_REQUIRED")
+        with Image.open(io.BytesIO(raw)) as image:
             if image.format != "PNG" or image.mode != "RGB" or image.size != (128, 128):
                 raise ValueError("RGB8_EXACT_PATCH_REQUIRED")
             if hashlib.sha256(image.tobytes()).hexdigest() != row["pixel_hash"]:
