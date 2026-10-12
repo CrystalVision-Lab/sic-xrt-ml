@@ -2,7 +2,7 @@
 
 ## Overall Status
 
-로컬 엔지니어링 PASS, 최종 CI 확인 중. 실제 정답 DATA_NOT_READY. TRAINING_PIPELINE_VERIFIED는 합성 자료로 학습 코드가 동작한다는 의미다. 실제 학습 NOT_RUN / 독립 평가 NOT_AVAILABLE / 성능 개선 NOT_VERIFIED. Detector·Segmentation 개선을 주장하지 않는다.
+엔지니어링 기능 검증 PASS. 커밋별 최종 CI 판정은 아래 Git/PR 기록에서 확인한다. 실제 정답 DATA_NOT_READY. TRAINING_PIPELINE_VERIFIED는 합성 자료로 학습 코드가 동작한다는 의미다. 실제 학습 NOT_RUN / 독립 평가 NOT_AVAILABLE / 성능 개선 NOT_VERIFIED. Detector·Segmentation 개선을 주장하지 않는다.
 
 ## Git / PR
 
@@ -81,3 +81,9 @@ Accuracy, Balanced Accuracy, Macro F1, 클래스별 Precision/Recall/F1/Support,
 Analyzer 시작 a6605088 / Issue108 / Draft109, ML 시작 cc0cbabb / Issue45 / Draft46. 최종 구현 HEAD/CI는 [Draft #46](https://github.com/CrystalVision-Lab/sic-xrt-ml/pull/46)에 기록한다. 원래 ML worktree feat/43@446d7fb는 clean 그대로 보존했다. 이 작업의 실행 위치는 `D:/capstone/.worktrees/sic-xrt-ml-td07`이며 그 src를 명시한 환경에서 검증했다. 사용한 기존 환경은 Python3.13.7/PyTorch2.9.1+cu128였지만 실제 계산은 CPU2 threads다. 별도 Linux CI는 torch2.9.1 CPU wheel을 사용한다.
 
 Git에는 generated Dataset/PNG/ONNX/Checkpoint/실제 연구자료·비밀을 포함하지 않는다. 최종 기능 검증은 TRAINING_PIPELINE_VERIFIED이며 실제 학습 NOT_RUN, 독립 과학 평가 NOT_AVAILABLE, IMPROVEMENT NOT_VERIFIED다. 원본 Source·검수·Geometry·모델·TIFF 역할은 Analyzer 회귀에서 유지됐다. 새로운 candidate는 배포되지 않았다.
+
+## Code Revision / CI Evidence
+
+ML 기능 코드 HEAD `4e9200260b51add3f206f7f3780cf07a8dd92ef7`의 [GitHub CI](https://github.com/CrystalVision-Lab/sic-xrt-ml/actions/runs/38224376912)는 SUCCESS: ruff/import/compile/34 tests/PR policy. 로컬34 PASS와 Linux34 PASS(기존 TorchScript exporter deprecation2건)는 별도 실행이다. 주요 커밋: `e4106a9` baseline, `cdcf0e0` 학습·평가·산출, `9178154` 회귀/CI, `9266672` loader 추적, `abddd22` 승인/그룹 근거, `97d94a9` batch 심볼 호환, `adf3f8e` 중복 제외 전 holdout 보존, `4e92002` 실제 PNG RGB8 인코딩 검사. 문서 마감 이후 최종 SHA/CI는 [Draft #46](https://github.com/CrystalVision-Lab/sic-xrt-ml/pull/46) 본문에 기록한다.
+
+상대 저장소의 [Dataset 준비 보고서](https://github.com/CrystalVision-Lab/sic-xrt-analyzer/blob/feat/108-verified-dataset-export/docs/result/XRT-RESULT-TD-07-DATASET-READINESS.md)와 [Draft #109](https://github.com/CrystalVision-Lab/sic-xrt-analyzer/pull/109)에는 실제 승인0/운영 DB 보존/Windows574 PASS·기존SKIP5/실제 TIFF12page·JPG 결과와 서버58 PASS가 기록되어 있다. 실제 과학적 모델 성능 비교표의 값은 아직 N/A다.
