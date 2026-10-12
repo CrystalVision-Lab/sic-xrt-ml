@@ -8,7 +8,7 @@ __pycache__/
 .env.*
 !.env.example
 .DS_Store
-data/
+/data/
 datasets/
 raw/
 outputs/
