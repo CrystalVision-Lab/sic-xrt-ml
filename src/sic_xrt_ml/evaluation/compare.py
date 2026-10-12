@@ -63,11 +63,14 @@ def frozen_session(bundle):
         len(session.get_inputs()) != 1
         or session.get_inputs()[0].name != "images"
         or session.get_inputs()[0].type != "tensor(float)"
-        or session.get_inputs()[0].shape != ["N", 3, 128, 128]
+        or len(session.get_inputs()[0].shape) != 4
+        or not isinstance(session.get_inputs()[0].shape[0], str)
+        or not session.get_inputs()[0].shape[0]
+        or session.get_inputs()[0].shape[1:] != [3, 128, 128]
         or len(session.get_outputs()) != 1
         or session.get_outputs()[0].name != "probabilities"
         or session.get_outputs()[0].type != "tensor(float)"
-        or session.get_outputs()[0].shape != ["N", 3]
+        or session.get_outputs()[0].shape != [session.get_inputs()[0].shape[0], 3]
     ):
         raise ValueError("ACTUAL_ONNX_CONTRACT")
     return session, m

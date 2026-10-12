@@ -217,6 +217,20 @@ def test_evaluation_onnx_parity_contract_and_candidate(dataset, tmp_path):
         comparison["same_inputs_and_labels"]
         and comparison["candidate"] == comparison["baseline"]
     )
+    # Existing approved bundle uses "batch", not "N"; symbolic name is not a semantic shape change.
+    import hashlib
+
+    import onnx
+
+    graph = onnx.load(str(bundle / "model.onnx"))
+    graph.graph.input[0].type.tensor_type.shape.dim[0].dim_param = "batch"
+    graph.graph.output[0].type.tensor_type.shape.dim[0].dim_param = "batch"
+    onnx.save(graph, str(bundle / "model.onnx"))
+    manifest["model_sha256"] = hashlib.sha256(
+        (bundle / "model.onnx").read_bytes()
+    ).hexdigest()
+    (bundle / "manifest.json").write_text(json.dumps(manifest))
+    frozen_session(bundle)
     bad = deepcopy(manifest)
     bad["classes"] = ["TED", "BPD", "TSD"]
     (bundle / "manifest.json").write_text(json.dumps(bad))
