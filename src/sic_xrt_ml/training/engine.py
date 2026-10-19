@@ -10,14 +10,8 @@ import numpy as np
 import torch
 from torch import nn
 
-from ..data.verified import (
-    VerifiedDataset,
-    canonical,
-    digest,
-    loader,
-    readiness,
-    validate,
-)
+from ..data.loading import prepare
+from ..data.verified import CLASSES, canonical, digest, loader
 from ..evaluation.metrics import metrics
 from .model import ARCHITECTURE, PatchClassifier
 
@@ -88,20 +82,39 @@ def setup(config):
     return torch.device(config.device)
 
 
-def evaluate_loader(model, data, device):
+def weighted_loss(logits, y, class_weights=None, sample_weights=None):
+    """Plain mean CE for v1. v2: class-balanced, consensus-weighted normalized CE."""
+    if class_weights is None and sample_weights is None:
+        return nn.functional.cross_entropy(logits, y)
+    per = nn.functional.cross_entropy(logits, y, reduction="none")
+    factor = torch.ones_like(per)
+    if class_weights is not None:
+        factor = factor * class_weights.to(per.device)[y]
+    if sample_weights is not None:
+        factor = factor * sample_weights.to(per.device, per.dtype)
+    return (per * factor).sum() / factor.sum().clamp_min(1e-12)
+
+
+def split_batch(batch):
+    """v1 batches are (x, y); v2 batches are (x, y, consensus weight)."""
+    return batch[0], batch[1], batch[2] if len(batch) > 2 else None
+
+
+def evaluate_loader(model, data, device, class_weights=None, classes=CLASSES):
     model.eval()
     labels = []
     predictions = []
     losses = []
     with torch.no_grad():
-        for x, y in data:
+        for batch in data:
+            x, y, _ = split_batch(batch)
             logits = model(x.to(device))
-            loss = nn.functional.cross_entropy(logits, y.to(device))
+            loss = weighted_loss(logits, y.to(device), class_weights)
             losses.extend([float(loss) * len(y)])
             labels.extend(y.tolist())
             predictions.extend(logits.argmax(1).cpu().tolist())
     return {
-        **metrics(labels, predictions),
+        **metrics(labels, predictions, classes),
         "loss": sum(losses) / len(labels) if labels else None,
     }
 
@@ -114,10 +127,16 @@ def load_checkpoint(path):
     return value
 
 
-def train(root, output, config=None, resume=None, synthetic_smoke=False):
+def train(
+    root, output, config=None, resume=None, synthetic_smoke=False, min_per_class=None
+):
     config = TrainConfig() if config is None else config
-    manifest = validate(root)
-    ready = readiness(manifest, synthetic_smoke)
+    prepared = prepare(root, synthetic_smoke, min_per_class)
+    manifest = prepared.manifest
+    ready = prepared.readiness
+    classes = prepared.classes
+    weights = prepared.class_weights()
+    class_weights = None if weights is None else torch.tensor(weights)
     if not ready["ready"]:
         raise ValueError("DATA_NOT_READY")
     output = Path(output)
@@ -125,7 +144,7 @@ def train(root, output, config=None, resume=None, synthetic_smoke=False):
         raise ValueError("NEW_RUN_DIRECTORY_REQUIRED")
     output.mkdir(parents=True, mode=0o700)
     device = setup(config)
-    model = PatchClassifier().to(device)
+    model = PatchClassifier(len(classes)).to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay
     )
@@ -134,11 +153,9 @@ def train(root, output, config=None, resume=None, synthetic_smoke=False):
     )
     generator = torch.Generator().manual_seed(config.seed)
     train_data = loader(
-        VerifiedDataset(root, "train", manifest), config.batch_size, True, generator
+        prepared.dataset("train"), config.batch_size, True, generator
     )
-    validation_data = loader(
-        VerifiedDataset(root, "validation", manifest), config.batch_size
-    )
+    validation_data = loader(prepared.dataset("validation"), config.batch_size)
     start = 0
     history = []
     best_loss = float("inf")
@@ -154,6 +171,11 @@ def train(root, output, config=None, resume=None, synthetic_smoke=False):
             checkpoint["dataset_hash"] != manifest["dataset_hash"]
             or {k: v for k, v in previous.items() if k != "epochs"}
             != {k: v for k, v in cfg.items() if k != "epochs"}
+            or checkpoint.get("classes", CLASSES) != classes
+            or (
+                prepared.schema_version == 2
+                and checkpoint.get("minimum_per_class") != ready["minimum_per_class"]
+            )
             or config.epochs <= checkpoint["epoch"]
             or checkpoint["early_stopped"]
         ):
@@ -186,15 +208,18 @@ def train(root, output, config=None, resume=None, synthetic_smoke=False):
         model.train()
         total = 0.0
         n = 0
-        for x, y in train_data:
+        for batch in train_data:
+            x, y, sample_weights = split_batch(batch)
             optimizer.zero_grad(set_to_none=True)
             logits = model(x.to(device))
-            loss = nn.functional.cross_entropy(logits, y.to(device))
+            loss = weighted_loss(logits, y.to(device), class_weights, sample_weights)
             loss.backward()
             optimizer.step()
             total += float(loss.detach()) * len(y)
             n += len(y)
-        validation = evaluate_loader(model, validation_data, device)
+        validation = evaluate_loader(
+            model, validation_data, device, class_weights, classes
+        )
         scheduler.step()
         improved = validation["loss"] < best_loss - 1e-8
         if improved:
@@ -217,6 +242,10 @@ def train(root, output, config=None, resume=None, synthetic_smoke=False):
         checkpoint = {
             "architecture": ARCHITECTURE,
             "dataset_hash": manifest["dataset_hash"],
+            "dataset": prepared.provenance(),
+            "classes": classes,
+            "class_weights": weights,
+            "minimum_per_class": ready["minimum_per_class"],
             "config": cfg,
             "config_hash": digest(cfg),
             "code_revision": code_revision(),
@@ -249,6 +278,9 @@ def train(root, output, config=None, resume=None, synthetic_smoke=False):
         else "REAL_TRAINING_COMPLETED",
         "architecture": ARCHITECTURE,
         "dataset_hash": manifest["dataset_hash"],
+        "dataset": prepared.provenance(),
+        "classes": classes,
+        "class_weights": weights,
         "config_hash": digest(cfg),
         "code_revision": code_revision(),
         "device": str(device),
@@ -263,7 +295,7 @@ def train(root, output, config=None, resume=None, synthetic_smoke=False):
 
 
 def selected_model(checkpoint):
-    model = PatchClassifier()
+    model = PatchClassifier(len(checkpoint.get("classes", CLASSES)))
     model.load_state_dict(checkpoint["best_model"])
     model.eval()
     return model
