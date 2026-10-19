@@ -8,7 +8,12 @@ import onnx
 import torch
 
 from ..data.verified import CLASSES, canonical, digest, read_json
-from ..evaluation.compare import INPUT, OUTPUT, frozen_session
+from ..evaluation.compare import (
+    INPUT,
+    MANIFEST_VERSIONS,
+    frozen_session,
+    manifest_version,
+)
 from ..training.engine import load_checkpoint, selected_model
 from ..training.model import ARCHITECTURE, ScoreExport
 
@@ -24,6 +29,12 @@ def export(checkpoint_path, output, evaluation_path):
         raise ValueError("EVALUATION_PROVENANCE")
     if evaluation["scientific_metrics"] == checkpoint["synthetic_smoke"]:
         raise ValueError("EVALUATION_ORIGIN")
+    classes = checkpoint.get("classes", CLASSES)
+    # 3 classes -> frozen manifest v1 (unchanged); 4 classes -> v2 with NOT_DEFECT.
+    version = manifest_version(classes)
+    _classes, output_contract, background = MANIFEST_VERSIONS[version]
+    if evaluation.get("classes", CLASSES) != classes:
+        raise ValueError("EVALUATION_CLASSES")
     out = Path(output)
     if out.exists():
         raise ValueError("NEW_CANDIDATE_DIRECTORY_REQUIRED")
@@ -47,16 +58,16 @@ def export(checkpoint_path, output, evaluation_path):
     onnx.checker.check_model(graph)
     manifest = {
         "schema": "frozen_xrt_patch_classifier",
-        "schema_version": 1,
+        "schema_version": version,
         "status": "validated_export",
-        "classes": CLASSES,
+        "classes": list(classes),
         "input": INPUT,
-        "output": OUTPUT,
+        "output": output_contract,
         "model_file": "model.onnx",
         "model_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
         "research_only": True,
         "independent_test_passed": False,
-        "background_class": False,
+        "background_class": background,
         "localizes_defects": False,
         "architecture": ARCHITECTURE,
         "dataset_hash": checkpoint["dataset_hash"],
@@ -80,7 +91,8 @@ def export(checkpoint_path, output, evaluation_path):
                 expected = model(torch.from_numpy(x)).numpy()
             actual = session.run(["probabilities"], {"images": x})[0]
             if (
-                actual.shape != (batch, 3)
+                actual.shape != (batch, len(classes))
+                or not np.allclose(actual.sum(1), 1, atol=1e-4)
                 or not np.isfinite(actual).all()
                 or not np.allclose(actual, expected, atol=1e-5, rtol=1e-4)
             ):
@@ -98,22 +110,22 @@ def export(checkpoint_path, output, evaluation_path):
             "results": parity,
         }
         (out / "manifest.json").write_bytes(canonical(manifest))
-        (out / "candidate-registry.json").write_bytes(
-            canonical(
-                {
-                    "schema": "xrt_model_candidate/v1",
-                    "candidate_id": manifest["model_sha256"],
-                    "manifest_sha256": hashlib.sha256(
-                        (out / "manifest.json").read_bytes()
-                    ).hexdigest(),
-                    "dataset_hash": checkpoint["dataset_hash"],
-                    "evaluation": evaluation,
-                    "status": manifest["candidate_status"],
-                    "distribution": "NOT_AUTHORIZED",
-                    "replaces_existing_model": False,
-                }
-            )
-        )
+        registry = {
+            "schema": "xrt_model_candidate/v1",
+            "candidate_id": manifest["model_sha256"],
+            "manifest_sha256": hashlib.sha256(
+                (out / "manifest.json").read_bytes()
+            ).hexdigest(),
+            "dataset_hash": checkpoint["dataset_hash"],
+            "evaluation": evaluation,
+            "status": manifest["candidate_status"],
+            "distribution": "NOT_AUTHORIZED",
+            "replaces_existing_model": False,
+        }
+        if version == 2:
+            # Label-dataset (verified_xrt_dataset/v2) identity: schema, version, id, hashes.
+            registry["dataset"] = checkpoint["dataset"]
+        (out / "candidate-registry.json").write_bytes(canonical(registry))
     except Exception:
         (out / "manifest.json").unlink(missing_ok=True)
         raise

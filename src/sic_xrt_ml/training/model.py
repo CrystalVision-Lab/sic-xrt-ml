@@ -8,8 +8,10 @@ ARCHITECTURE = "xrt_local_contrast_cnn/v1"
 
 
 class PatchClassifier(nn.Module):
-    def __init__(self):
+    def __init__(self, num_classes=3):
         super().__init__()
+        if num_classes not in (3, 4):
+            raise ValueError("NUM_CLASSES")
         self.features = nn.Sequential(
             nn.Conv2d(3, 8, 5, stride=2, padding=2),
             nn.ReLU(),
@@ -19,7 +21,8 @@ class PatchClassifier(nn.Module):
             nn.ReLU(),
             nn.AdaptiveAvgPool2d(1),
         )
-        self.head = nn.Linear(32, 3)
+        # 3 = BPD/TED/TSD (v1 data); 4 adds NOT_DEFECT (v2 data). Same trunk.
+        self.head = nn.Linear(32, num_classes)
 
     @staticmethod
     def contrast(x):

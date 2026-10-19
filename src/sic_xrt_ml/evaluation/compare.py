@@ -7,16 +7,15 @@ import numpy as np
 import onnxruntime as ort
 import torch
 
+from ..data.consensus import CLASSES_V2
+from ..data.loading import prepare
 from ..data.verified import (
     CLASSES,
-    VerifiedDataset,
     canonical,
     digest,
     loader,
     read_json,
-    readiness,
     safe_file,
-    validate,
 )
 from ..training.engine import load_checkpoint, selected_model
 from .metrics import metrics
@@ -33,21 +32,36 @@ OUTPUT = {
     "shape": ["N", 3],
     "meaning": "uncalibrated_class_scores",
 }
+# frozen_xrt_patch_classifier schema_version 2 = v1 + NOT_DEFECT background score.
+OUTPUT_V2 = {**OUTPUT, "shape": ["N", 4]}
+# schema_version -> (classes, output block, background_class)
+MANIFEST_VERSIONS = {1: (CLASSES, OUTPUT, False), 2: (CLASSES_V2, OUTPUT_V2, True)}
+
+
+def manifest_version(classes):
+    """Frozen manifest schema_version for a class order (3 -> v1, 4 -> v2)."""
+    for version, (expected, _output, _background) in MANIFEST_VERSIONS.items():
+        if list(classes) == expected:
+            return version
+    raise ValueError("UNSUPPORTED_CLASS_ORDER")
 
 
 def frozen_session(bundle):
     bundle = Path(bundle).absolute()
     m = read_json(safe_file(bundle, "manifest.json").read_bytes())
+    version = m.get("schema_version") if isinstance(m, dict) else None
+    contract = MANIFEST_VERSIONS.get(version) if type(version) is int else None
+    classes, output, background = contract or (None, None, None)
     if (
-        m.get("schema") != "frozen_xrt_patch_classifier"
-        or m.get("schema_version") != 1
-        or m.get("classes") != CLASSES
+        contract is None
+        or m.get("schema") != "frozen_xrt_patch_classifier"
+        or m.get("classes") != classes
         or m.get("input") != INPUT
-        or m.get("output") != OUTPUT
+        or m.get("output") != output
         or m.get("model_file") != "model.onnx"
         or m.get("status") != "validated_export"
         or m.get("research_only") is not True
-        or m.get("background_class") is not False
+        or m.get("background_class") is not background
         or m.get("localizes_defects") is not False
     ):
         raise ValueError("WRONG_MODEL_CONTRACT")
@@ -70,7 +84,8 @@ def frozen_session(bundle):
         or len(session.get_outputs()) != 1
         or session.get_outputs()[0].name != "probabilities"
         or session.get_outputs()[0].type != "tensor(float)"
-        or session.get_outputs()[0].shape != [session.get_inputs()[0].shape[0], 3]
+        or session.get_outputs()[0].shape
+        != [session.get_inputs()[0].shape[0], len(classes)]
     ):
         raise ValueError("ACTUAL_ONNX_CONTRACT")
     return session, m
@@ -79,14 +94,20 @@ def frozen_session(bundle):
 def evaluate(
     root, checkpoint_path, output, existing_bundle=None, synthetic_smoke=False
 ):
-    manifest = validate(root)
-    ready = readiness(manifest, synthetic_smoke)
-    if not ready["ready"]:
-        raise ValueError("DATA_NOT_READY")
     checkpoint = load_checkpoint(checkpoint_path)
+    # v2 readiness reuses the per-class gate recorded at training time.
+    v2 = (checkpoint.get("dataset") or {}).get("schema_version") == 2
+    prepared = prepare(
+        root, synthetic_smoke, checkpoint["minimum_per_class"] if v2 else None
+    )
+    manifest = prepared.manifest
+    classes = prepared.classes
+    if not prepared.readiness["ready"]:
+        raise ValueError("DATA_NOT_READY")
     if (
         checkpoint["dataset_hash"] != manifest["dataset_hash"]
         or checkpoint["synthetic_smoke"] != synthetic_smoke
+        or checkpoint.get("classes", CLASSES) != classes
     ):
         raise ValueError("CHECKPOINT_DATASET")
     lock = Path(checkpoint_path).parent / "final-evaluation.json"
@@ -110,21 +131,25 @@ def evaluate(
         )
     model = selected_model(checkpoint)
     torch.set_num_threads(2)
-    data = VerifiedDataset(root, "test", manifest)
+    data = prepared.dataset("test")
     session, old_manifest = (
         frozen_session(existing_bundle) if existing_bundle else (None, None)
     )
+    # A 3-class baseline can be scored on 4-class labels (it never predicts NOT_DEFECT).
+    if old_manifest and old_manifest["classes"] != classes[: len(old_manifest["classes"])]:
+        raise ValueError("BASELINE_CLASS_ORDER")
     labels = []
     new = []
     old = []
     with torch.no_grad():
-        for x, y in loader(data, checkpoint["config"]["batch_size"]):
+        for batch in loader(data, checkpoint["config"]["batch_size"]):
+            x, y = batch[0], batch[1]
             labels.extend(y.tolist())
             new.extend(model(x).argmax(1).tolist())
             if session:
                 scores = session.run(["probabilities"], {"images": x.numpy()})[0]
                 if (
-                    scores.shape != (len(y), 3)
+                    scores.shape != (len(y), len(old_manifest["classes"]))
                     or not np.isfinite(scores).all()
                     or (scores < 0).any()
                     or not np.allclose(scores.sum(1), 1, atol=1e-4)
@@ -136,20 +161,34 @@ def evaluate(
         if synthetic_smoke
         else "INDEPENDENT_EVALUATION_COMPLETED",
         "dataset_hash": manifest["dataset_hash"],
-        "test_sample_hash": digest(
-            [(r["sample_id"], r["class_label"], r["crop_hash"]) for r in data.rows]
-        ),
+        "test_sample_hash": digest(prepared.identity(data.rows)),
         "checkpoint_sha256": hashlib.sha256(
             Path(checkpoint_path).read_bytes()
         ).hexdigest(),
-        "candidate": metrics(labels, new),
-        "baseline": metrics(labels, old) if session else None,
+        "candidate": metrics(labels, new, classes),
+        "baseline": metrics(labels, old, classes) if session else None,
         "baseline_model_sha256": old_manifest["model_sha256"] if old_manifest else None,
         "improvement": "NOT_VERIFIED",
         "scientific_metrics": not synthetic_smoke,
         "same_inputs_and_labels": bool(session),
         "selection_policy": "validation only; explicit final test invocation",
     }
+    if prepared.schema_version == 2:
+        # Random-queue samples are the unbiased subset for accuracy estimates.
+        chosen = [i for i, r in enumerate(data.rows) if r["random_sample"]]
+        result |= {
+            "classes": classes,
+            "dataset": prepared.provenance(),
+            "coverage": prepared.readiness["coverage"],
+            "random_sample_candidate": metrics(
+                [labels[i] for i in chosen], [new[i] for i in chosen], classes
+            ),
+            "random_sample_baseline": metrics(
+                [labels[i] for i in chosen], [old[i] for i in chosen], classes
+            )
+            if session
+            else None,
+        }
     (output / "evaluation.json").write_bytes(canonical(result))
     (output / "predictions.json").write_bytes(
         canonical(
