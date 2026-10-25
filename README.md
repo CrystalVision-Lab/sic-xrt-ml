@@ -1,6 +1,6 @@
 # SiC XRT ML
 
-승인된 `verified_xrt_dataset/v1` RGB8 128×128 패치의 BPD/TED/TSD 분류, 그리고 검수 라벨 합의 `verified_xrt_dataset/v2`의 BPD/TED/TSD/NOT_DEFECT 4클래스 분류 연구 파이프라인. 학습·평가·ONNX 후보 산출을 수행하며 Analyzer 모델을 자동 교체하지 않는다. 입력 데이터 변환·UI 코드는 이 저장소에 포함하지 않는다.
+승인된 `verified_xrt_dataset/v1` RGB8 128×128 패치의 BPD/TED/TSD 분류, 검수 라벨 합의 `verified_xrt_dataset/v2`의 BPD/TED/TSD/NOT_DEFECT 4클래스 분류, 그리고 제공자 라벨 `provider_subtype_point_dataset/v1`의 큰 종류 + 방향 세부 종류(TED a~f, TSD a~c) 분류 연구 파이프라인. 학습·평가·ONNX 후보 산출을 수행하며 Analyzer 모델을 자동 교체하지 않는다. 입력 데이터 변환·UI 코드는 이 저장소에 포함하지 않는다.
 
 ## 설치 및 실행
 
@@ -21,3 +21,5 @@ Linux에서는 `.venv/bin/python`을 사용한다. 현재 실제 승인 데이�
 [TD-07 결과·사용 정책](docs/XRT-RESULT-TD-07-TRAINING-EVALUATION.md)에 학습 설정·재개·독립 평가·제약을 기록한다.
 
 [v2 4클래스 학습](docs/VERIFIED-DATASET-V2-TRAINING.md): Analyzer `python -m xrt_server.label_dataset_admin`으로 반출한 폴더를 같은 명령으로 학습한다(`--min-per-class train,validation,test`). [모델 산출물 계약](docs/model-contract.md)에 frozen manifest v1/v2를 기록한다.
+
+[제공자 세부 종류 학습](docs/PROVIDER-SUBTYPE-TRAINING.md): sic-xrt-data-tools `provider_subtype_point_dataset/v1` 폴더를 같은 `validate/train/evaluate/export` 명령과 `crossval`(Area 단위 교차 검증)로 다룬다. ONNX는 v1 `probabilities`에 `subtype_probabilities` 출력을 더한 번들과, 출력이 하나인 `--coarse-only` 번들을 만들 수 있다.
