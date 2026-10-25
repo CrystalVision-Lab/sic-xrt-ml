@@ -100,8 +100,10 @@ def summarize(labels, fine):
     coarse_true = [FINE_TO_CLASS[y] for y in labels]
     coarse_pred = coarse_scores(fine).argmax(1).tolist() if len(labels) else []
     fine_pred = fine.argmax(1).tolist() if len(labels) else []
+    coarse = metrics(coarse_true, coarse_pred, CLASSES)
+    coarse["present_label_macro"] = present_macro(coarse)
     return {
-        "coarse": metrics(coarse_true, coarse_pred, CLASSES),
+        "coarse": coarse,
         "coarse_rule": "argmax of summed fine probabilities (= ONNX probabilities output)",
         "fine": fine_metrics(list(labels), fine_pred),
         "within_class": within_class_subtype(list(labels), fine),
@@ -121,7 +123,8 @@ def _coarse_stats(y, p, k=3):
     precision = np.divide(tp, predicted, out=np.zeros(k), where=predicted > 0)
     denom = precision + recall
     f1 = np.divide(2 * precision * recall, denom, out=np.zeros(k), where=denom > 0)
-    return tp.sum() / len(y), recall.mean(), f1.mean()
+    present = support > 0  # macro over classes present in this (re)sample
+    return tp.sum() / len(y), recall[present].mean(), f1[present].mean()
 
 
 def paired_bootstrap(labels, candidate, baseline, resamples=2000, seed=2026):

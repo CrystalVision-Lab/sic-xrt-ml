@@ -365,7 +365,11 @@ def fine_counts(data, assignment):
     }
 
 
-def readiness(data, assignment, synthetic_smoke=False, minimum=None):
+def readiness(data, assignment, synthetic_smoke=False, minimum=None, fold=False):
+    """Training gate. ``fold=True`` (Area cross-validation folds): a held-out Area may lack
+    a class or subtype, so only train needs every coarse class (gate) and the other
+    splits need any sample; absent and rare labels are reported, not blocking.
+    """
     if synthetic_smoke and not data.synthetic:
         raise ValueError("SYNTHETIC_OVERRIDE_FORBIDDEN_FOR_REAL_DATA")
     gate = minimum_gate(minimum, synthetic_smoke)
@@ -379,9 +383,16 @@ def readiness(data, assignment, synthetic_smoke=False, minimum=None):
     }
     areas = {s: sorted((a for a, v in assignment.items() if v == s), key=int) for s in SPLITS}
     # Every coarse class meets the per-split gate and every fine label is trainable.
+    if fold:
+        sufficient = all(coarse["train"][c] >= gate["train"] for c in CLASSES) and all(
+            sum(coarse[s].values()) for s in SPLITS
+        )
+    else:
+        sufficient = all(coarse[s][c] >= gate[s] for s in SPLITS for c in CLASSES) and all(
+            fine["train"][f] >= 1 for f in FINE_LABELS
+        )
     ready = (
-        all(coarse[s][c] >= gate[s] for s in SPLITS for c in CLASSES)
-        and all(fine["train"][f] >= 1 for f in FINE_LABELS)
+        sufficient
         and all(areas.values())
         and (synthetic_smoke or not data.synthetic)
     )
@@ -404,6 +415,7 @@ def readiness(data, assignment, synthetic_smoke=False, minimum=None):
             s: [f for f in FINE_LABELS if 0 < fine[s][f] < RARE_SUPPORT] for s in SPLITS
         },
         "minimum_per_class": gate,
+        "mode": "cross_validation_fold" if fold else "standard",
         "labels_source": data.manifest["labels_source"],
         "expert_verified": data.manifest["expert_verified"],
     }

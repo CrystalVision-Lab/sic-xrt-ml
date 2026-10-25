@@ -361,6 +361,21 @@ def test_patch_changed_after_validation_is_caught_on_next_validate(provider):
         ps.validate(root)
 
 
+def test_fold_readiness_allows_absent_held_out_labels(provider):
+    root, _, _ = provider
+    data = ps.validate(root)
+    for row in data.rows:
+        if row["area"] == "8" and row["label"] == "BPD":
+            row["area"] = "8x"  # simulate a held-out Area without BPD (in memory only)
+    data.rows = [r for r in data.rows if r["area"] != "8x"]
+    plan = {"1": "train", "2": "validation", "8": "test", "9": "train"}
+    assignment = ps.split_assignment(data, plan)
+    assert not ps.readiness(data, assignment, True)["ready"]
+    fold = ps.readiness(data, assignment, True, fold=True)
+    assert fold["ready"] and fold["mode"] == "cross_validation_fold"
+    assert "BPD" in fold["absent_fine_labels"]["test"]
+
+
 def test_class_weights_and_config_guards(provider):
     root, _, _ = provider
     data = ps.validate(root)

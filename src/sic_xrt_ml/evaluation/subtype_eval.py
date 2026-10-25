@@ -24,7 +24,7 @@ from ..training.subtype import (
 )
 from .compare import frozen_session
 from .metrics import metrics
-from .subtype_metrics import coarse_scores, paired_bootstrap, summarize
+from .subtype_metrics import coarse_scores, paired_bootstrap, present_macro, summarize
 
 
 def baseline_scores(bundle, pixels, chosen, batch_size=64):
@@ -61,7 +61,13 @@ def evaluate_subtype(
     checkpoint = load_checkpoint(checkpoint_path)
     data = ps.validate(root, load_pixels=True) if data is None else data
     assignment = ps.split_assignment(data, checkpoint["split_assignment"])
-    ready = ps.readiness(data, assignment, synthetic_smoke, checkpoint["minimum_per_class"])
+    ready = ps.readiness(
+        data,
+        assignment,
+        synthetic_smoke,
+        checkpoint["minimum_per_class"],
+        checkpoint.get("readiness_mode") == "cross_validation_fold",
+    )
     if not ready["ready"]:
         raise ValueError("DATA_NOT_READY")
     if (
@@ -169,8 +175,8 @@ def fold_plan(data):
 
 KEYS = (
     ("coarse", "accuracy"),
-    ("coarse", "balanced_accuracy"),
-    ("coarse", "macro_f1"),
+    ("coarse_present", "balanced_accuracy"),
+    ("coarse_present", "macro_f1"),
     ("fine", "accuracy"),
     ("fine_present", "macro_f1"),
     ("fine_present", "balanced_accuracy"),
@@ -182,6 +188,8 @@ def _pick(result, block, key):
     c = result["candidate"]
     if block == "fine_present":
         return c["fine"]["present_label_macro"][key]
+    if block == "coarse_present":
+        return c["coarse"]["present_label_macro"][key]
     if block == "within":
         return c["within_class"][key]
     return c[block][key]
@@ -219,6 +227,7 @@ def cross_validate(
             synthetic_smoke=synthetic_smoke,
             split_map=split_map,
             data=data,
+            fold=True,
         )
         result = evaluate_subtype(
             root,
@@ -243,9 +252,18 @@ def cross_validate(
                 c: v["subtype_accuracy"]
                 for c, v in result["candidate"]["within_class"]["by_class"].items()
             },
+            "absent_classes": [
+                r["class"] for r in result["candidate"]["coarse"]["per_class"] if not r["support"]
+            ],
             "baseline": None
             if result["baseline"] is None
-            else {k: result["baseline"][k] for k in ("accuracy", "balanced_accuracy", "macro_f1")},
+            else {
+                "accuracy": result["baseline"]["accuracy"],
+                **{
+                    k: present_macro(result["baseline"])[k]
+                    for k in ("balanced_accuracy", "macro_f1")
+                },
+            },
             "fine_per_label": {
                 r["class"]: {"support": r["support"], "f1": r["f1"], "recall": r["recall"]}
                 for r in result["candidate"]["fine"]["per_class"]

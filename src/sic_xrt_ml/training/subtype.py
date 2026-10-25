@@ -183,12 +183,13 @@ def train_subtype(
     split_map=None,
     minimum=None,
     data=None,
+    fold=False,
 ):
     """Train one run. ``data`` (a validated ProviderDataset with pixels) skips re-reading."""
     config = SubtypeTrainConfig() if config is None else config
     data = ps.validate(root, load_pixels=True) if data is None else data
     assignment = ps.split_assignment(data, split_map)
-    ready = ps.readiness(data, assignment, synthetic_smoke, minimum)
+    ready = ps.readiness(data, assignment, synthetic_smoke, minimum, fold)
     if not ready["ready"]:
         raise ValueError("DATA_NOT_READY")
     output = Path(output)
@@ -209,6 +210,7 @@ def train_subtype(
             != {k: v for k, v in cfg.items() if k != "epochs"}
             or checkpoint["split_assignment"] != assignment
             or checkpoint["minimum_per_class"] != ready["minimum_per_class"]
+            or checkpoint.get("readiness_mode", "standard") != ready["mode"]
             or checkpoint["synthetic_smoke"] != synthetic_smoke
             or config.epochs <= checkpoint["epoch"]
             or checkpoint["early_stopped"]
@@ -292,6 +294,7 @@ def train_subtype(
             "split_assignment": assignment,
             "class_weights": weights,
             "minimum_per_class": ready["minimum_per_class"],
+            "readiness_mode": ready["mode"],
             "config": cfg,
             "config_hash": digest(cfg),
             "code_revision": code_revision(),
