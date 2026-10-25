@@ -1,0 +1,16 @@
+{
+  "seed": 2026,
+  "batch_size": 64,
+  "learning_rate": 0.001,
+  "epochs": 30,
+  "patience": 6,
+  "weight_decay": 0.0001,
+  "scheduler_step": 10,
+  "scheduler_gamma": 0.5,
+  "cpu_threads": 2,
+  "device": "cuda",
+  "augmentation": "none",
+  "architecture": "xrt_local_contrast_subtype_cnn_mbc/v1",
+  "class_weighting": "sqrt_balanced",
+  "ema_decay": 0.998
+}
