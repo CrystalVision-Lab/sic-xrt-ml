@@ -9,6 +9,7 @@ import torch
 
 from ..data.consensus import CLASSES_V2
 from ..data.loading import prepare
+from ..data.provider_subtype import FINE_LABELS, FINE_TO_CLASS
 from ..data.verified import (
     CLASSES,
     canonical,
@@ -36,6 +37,17 @@ OUTPUT = {
 OUTPUT_V2 = {**OUTPUT, "shape": ["N", 4]}
 # schema_version -> (classes, output block, background_class)
 MANIFEST_VERSIONS = {1: (CLASSES, OUTPUT, False), 2: (CLASSES_V2, OUTPUT_V2, True)}
+# Optional second output of a v1 bundle (provider subtype models). Consumers that only
+# run ["probabilities"] are unaffected; the block must match exactly when present.
+SUBTYPE_OUTPUT = {
+    "name": "subtype_probabilities",
+    "shape": ["N", 10],
+    "labels": FINE_LABELS,
+    "class_of_label": FINE_TO_CLASS,
+    "meaning": "uncalibrated_subtype_scores",
+    "relation": "probabilities[:, k] = sum of subtype_probabilities over labels with class_of_label == k",
+    "orientation": "tiff_pixel_grid_direction_subtypes_mirror_with_the_image",
+}
 
 
 def manifest_version(classes):
@@ -63,8 +75,12 @@ def frozen_session(bundle):
         or m.get("research_only") is not True
         or m.get("background_class") is not background
         or m.get("localizes_defects") is not False
+        or ("subtype_output" in m and (version != 1 or m["subtype_output"] != SUBTYPE_OUTPUT))
     ):
         raise ValueError("WRONG_MODEL_CONTRACT")
+    outputs = [(output["name"], len(classes))]
+    if "subtype_output" in m:
+        outputs.append((SUBTYPE_OUTPUT["name"], SUBTYPE_OUTPUT["shape"][1]))
     model = safe_file(bundle, "model.onnx", 256 * 1024**2)
     if hashlib.sha256(model.read_bytes()).hexdigest() != m["model_sha256"]:
         raise ValueError("MODEL_HASH")
@@ -81,11 +97,13 @@ def frozen_session(bundle):
         or not isinstance(session.get_inputs()[0].shape[0], str)
         or not session.get_inputs()[0].shape[0]
         or session.get_inputs()[0].shape[1:] != [3, 128, 128]
-        or len(session.get_outputs()) != 1
-        or session.get_outputs()[0].name != "probabilities"
-        or session.get_outputs()[0].type != "tensor(float)"
-        or session.get_outputs()[0].shape
-        != [session.get_inputs()[0].shape[0], len(classes)]
+        or len(session.get_outputs()) != len(outputs)
+        or any(
+            actual.name != name
+            or actual.type != "tensor(float)"
+            or actual.shape != [session.get_inputs()[0].shape[0], width]
+            for actual, (name, width) in zip(session.get_outputs(), outputs, strict=True)
+        )
     ):
         raise ValueError("ACTUAL_ONNX_CONTRACT")
     return session, m
