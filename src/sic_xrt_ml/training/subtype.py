@@ -43,6 +43,7 @@ class SubtypeTrainConfig:
     class_weighting: str = "sqrt_balanced"
     # Exponential moving average of the weights used for validation, selection and
     # export (0 = off). Smooths epoch-to-epoch jumps on the held-out validation Area.
+    # BatchNorm statistics of the EMA model are re-estimated on train after each epoch.
     ema_decay: float = 0.0
 
     def __post_init__(self):
@@ -162,6 +163,32 @@ def _ema_update(ema, model, decay):
                 e.copy_(v)
 
 
+def recompute_batch_norm(model, pixels, chosen, device, batch_size=256):
+    """Re-estimate BatchNorm running statistics of ``model`` on train patches.
+
+    EMA-averaged weights do not match running statistics collected for the raw weights;
+    without this the EMA model can collapse to one class on another Area. Cumulative
+    average (momentum=None) over a fixed order, so the result is deterministic. Uses the
+    train split only. No-op for models without BatchNorm.
+    """
+    norms = [m for m in model.modules() if isinstance(m, torch.nn.BatchNorm2d)]
+    if not norms:
+        return
+    momenta = [m.momentum for m in norms]
+    for m in norms:
+        m.reset_running_stats()
+        m.momentum = None
+    model.train()
+    index = torch.as_tensor(chosen, dtype=torch.long)
+    with torch.no_grad():
+        for start in range(0, len(index), batch_size):
+            x = pixels[index[start : start + batch_size].to(pixels.device)]
+            model(x.to(device).float().div_(255))
+    for m, momentum in zip(norms, momenta, strict=True):
+        m.momentum = momentum
+    model.eval()
+
+
 def _restore_rng(checkpoint, generator, device):
     generator.set_state(checkpoint["generator"])
     torch.set_rng_state(checkpoint["rng"])
@@ -267,6 +294,8 @@ def train_subtype(
                 _ema_update(ema, model, config.ema_decay)
             total += float(loss.detach()) * len(y)
             n += len(y)
+        if ema is not None:
+            recompute_batch_norm(ema, pixels, train_idx, device)
         scored = model if ema is None else ema
         validation = _validation(scored, pixels, val_idx, val_y, device, class_weights)
         scheduler.step()
