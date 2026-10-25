@@ -1,9 +1,13 @@
-"""One entry point for verified_xrt_dataset v1 (3 classes) and v2 (4 classes)."""
+"""One entry point for verified_xrt_dataset v1 (3 classes) and v2 (4 classes).
+
+provider_subtype_point_dataset/v1 (fine subtype labels) is detected here and routed to
+its own pipeline (``provider_subtype``, ``training.subtype``) by the CLI.
+"""
 
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import consensus, verified
+from . import consensus, provider_subtype, verified
 
 
 @dataclass
@@ -50,6 +54,17 @@ class PreparedDataset:
                 "parameters": m["parameters"],
             }
         return result
+
+
+def is_provider_subtype(root):
+    """True for a provider_subtype_point_dataset folder (parallel subtype pipeline).
+
+    ``prepare`` keeps accepting only verified_xrt_dataset v1/v2; the subtype dataset
+    is validated by ``provider_subtype.validate``.
+    """
+    raw = verified.safe_file(Path(root).absolute(), "manifest.json", 256 * 1024**2)
+    value = verified.read_json(raw.read_bytes())
+    return isinstance(value, dict) and value.get("schema") == provider_subtype.SCHEMA
 
 
 def schema_version(root):
