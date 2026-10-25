@@ -583,3 +583,19 @@ def test_repository_config_parses():
     path = Path(__file__).resolve().parents[1] / "configs" / "provider-subtype.json"
     config = SubtypeTrainConfig(**read_json(path.read_bytes()))
     assert config.augmentation == "none" and config.architecture.endswith("_mbc/v1")
+
+
+def test_batch_norm_re_estimation_is_deterministic():
+    from sic_xrt_ml.training.subtype import recompute_batch_norm
+
+    torch.manual_seed(0)
+    model = SubtypeClassifier(MEDIUM_BN_CENTER).eval()
+    pixels = torch.randint(0, 256, (6, 3, 128, 128), dtype=torch.uint8)
+    first_bn = model.features[1]
+    first_bn.running_mean.fill_(5.0)
+    recompute_batch_norm(model, pixels, [0, 1, 2, 3, 4], "cpu", batch_size=2)
+    once = {k: v.clone() for k, v in model.state_dict().items()}
+    recompute_batch_norm(model, pixels, [0, 1, 2, 3, 4], "cpu", batch_size=2)
+    assert not model.training and first_bn.momentum == 0.1
+    assert all(torch.equal(once[k], v) for k, v in model.state_dict().items())
+    assert first_bn.running_mean.abs().max() < 5.0
